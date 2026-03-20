@@ -368,33 +368,56 @@ Ralph started at **9:33 PM PDT** (2026-03-19) and the last story code was commit
 
 ### Per-Story Timing
 
-Derived from commit timestamps. "Duration" is time between the story's implementation commit and the previous story's commit (includes Claude thinking + CI wait time).
+Derived from two sources: `metrics.json` (auto-recorded telemetry from `ralph-ci.sh` -- available for the second run onward) and `git log` timestamps (for the first run before the script crash). Duration includes Claude thinking time + CI wait time. Where `metrics.json` data is available, those numbers are used as they're more accurate than git-log estimates.
 
 | Story | Title | Duration | CI Attempts | Notes |
 |-------|-------|----------|-------------|-------|
-| US-001 | Project Scaffolding | 8m | 1 | kubebuilder init + deps |
-| US-002a | CRD Types (Provider/NetworkMap/StorageMap) | 7m | 1 | |
-| US-002b | CRD Types (Plan/Migration/Hook) | 6m | 1 | |
-| US-003 | API Client -- Core + Auth | 5m | 2 | **FAIL**: 3 errcheck + 3 unused lint errors. Loop crashed (bug #1). Fixed in next iteration. |
-| US-004 | API Client -- VM Operations | 4m | 1 | Bundled with US-003 fix in same iteration |
-| US-005 | API Client -- Snapshots & Images | 8m | 1 | |
-| US-006 | API Client -- Networking/Storage/Cluster | 7m | 1 | |
-| US-007 | API Client -- CBT/CRT | 11m | 1 | Complex two-step flow + JWT + pagination |
-| US-008a | Mock Server -- Core | 11m | 1 | 8 files (at budget limit) |
-| US-008b | Mock Server -- Snapshots/Images/CBT | 14m | 1 | + standalone binary |
-| US-009 | VM Builder | 14m | 1 | Comprehensive test fixtures |
-| US-010 | Validation Engine | 15m | 1 | 13 validation rules |
-| US-011 | Provider Controller + envtest | 19m | 1 | Most complex setup (envtest + mock + CRD fixtures) |
-| US-012 | Plan Controller | 24m | 1 | |
-| US-013a | Migration Controller -- Framework | 16m | 1 | State machine + idempotency |
-| US-013b | Migration Controller -- Disk Transfer | 22m | 1 | CDI DataVolumes + credential secrets + CA propagation |
-| US-013c | Migration Controller -- VM Creation | 16m | 1 | + full integration test |
-| US-014 | Warm Migration (Experimental) | 26m | 1 | Longest story -- precopy loop + delta transfer |
-| US-015 | Hook System | 33m | 1 | |
-| US-016 | kubectl Plugin | 20m | 5 | **FAIL x4**: Flaky integration test (finalizer race condition). Eventually fixed by splitting finalizer update from status update. |
-| US-017 | Observability | 19m | 2 | **FAIL**: Deprecated `GetEventRecorderFor` (staticcheck SA1019). Loop crashed (bug #2). Fixed in next iteration. |
-| US-018 | E2E Test Framework | 6m | 1 | Fast -- mostly test scaffolding |
-| US-019 | Documentation & Release | 5m | 1 | README rewrite + CONTRIBUTING.md + release workflow |
+| US-001 | Project Scaffolding | 11m 11s | 1 | kubebuilder init + deps |
+| US-002a | CRD Types (Provider/NetworkMap/StorageMap) | 5m 53s | 1 | |
+| US-002b | CRD Types (Plan/Migration/Hook) | 5m 53s | 1 | |
+| US-003 | API Client -- Core + Auth | 9m 19s | 2 | **FAIL** (run 1): 3 errcheck + 3 unused lint errors. Loop crashed (bug #1). Fixed in run 2. |
+| US-004 | API Client -- VM Operations | 10m 52s | 1 | |
+| US-005 | API Client -- Snapshots & Images | 9m 3s | 1 | |
+| US-006 | API Client -- Networking/Storage/Cluster | 11m 35s | 1 | |
+| US-007 | API Client -- CBT/CRT | 10m 58s | 1 | Complex two-step flow + JWT + pagination |
+| US-008a | Mock Server -- Core | 14m 10s | 1 | 8 files (at budget limit) |
+| US-008b | Mock Server -- Snapshots/Images/CBT | 16m 2s | 1 | + standalone binary |
+| US-009 | VM Builder | 17m 42s | 1 | Comprehensive test fixtures |
+| US-010 | Validation Engine | 18m 14s | 1 | 13 validation rules |
+| US-011 | Provider Controller + envtest | 23m 45s | 1 | Most complex setup (envtest + mock + CRD fixtures) |
+| US-012 | Plan Controller | 16m 0s | 1 | |
+| US-013a | Migration Controller -- Framework | 22m 5s | 1 | State machine + idempotency |
+| US-013b | Migration Controller -- Disk Transfer | 15m 39s | 1 | CDI DataVolumes + credential secrets + CA propagation |
+| US-013c | Migration Controller -- VM Creation | 26m 18s | 1 | + full integration test |
+| US-014 | Warm Migration (Experimental) | 32m 19s | 1 | Longest story -- precopy loop + delta transfer |
+| US-015 | Hook System | 20m 14s | 1 | |
+| US-016 | kubectl Plugin | 39m 42s* | 5 | **FAIL x4**: 3 no-commit iterations + 1 CI fail (flaky integration test, finalizer race). Fixed on attempt 5. *Duration is for the passing attempt; total wall time across all 5 attempts was ~1h 59m. |
+| US-017 | Observability | ~19m | 2 | **FAIL**: Deprecated `GetEventRecorderFor` (staticcheck SA1019). Loop crashed (bug #2). Fixed in subsequent run. |
+| US-018 | E2E Test Framework | ~6m | 1 | Fast -- mostly test scaffolding |
+| US-019 | Documentation & Release | ~5m | 1 | README rewrite + CONTRIBUTING.md + release workflow |
+
+*Timing for US-001 through US-016 from `metrics.json` (auto-recorded telemetry). US-017/018/019 estimated from git log timestamps (script crashed before recording).*
+
+### Telemetry System Performance
+
+The `ralph-ci.sh` telemetry system (`metrics.json` + `metrics-report.md`) was designed to auto-record all this data. In practice:
+
+- **Run 1** (US-001 through US-003 failure): Telemetry initialized but the script crashed on the first CI failure (bug #1: `set -e` + `gh run watch`). The `trap EXIT` finalizer ran but only captured 3 iterations before the crash.
+- **Run 2** (US-003 retry through US-016): Telemetry worked correctly for 21 iterations. Captured accurate per-iteration timing, CI run IDs, attempt numbers, and pass/fail results. Crashed again on US-017 CI failure (bug #2: `pipefail` in pipe).
+- **Run 3** (US-017 through US-019): Code was committed before the crash but telemetry wasn't captured for these stories.
+
+**Net result**: `metrics.json` has accurate data for 24 of ~28 total iterations. The per-story timing table above uses `metrics.json` data where available (US-001 through US-016) and git-log estimates for the rest.
+
+**Key `metrics.json` stats** (from the auto-generated `metrics-report.md`):
+- Total iterations recorded: 24
+- Stories completed (in this run): 20
+- CI passes: 20, CI failures: 1, No-commit iterations: 3
+- First-pass CI rate: 95% (within this run -- doesn't count the US-003 failure from run 1)
+- Average iteration duration: 17m 19s
+- Average story duration (including retries): 20m 47s
+- Iteration efficiency: 83% (stories completed / total iterations)
+
+The 3 "no-commit" iterations were all on US-016 -- Ralph spawned fresh contexts that read the flaky test failure but couldn't produce a working fix, resulting in no git commits. On the 4th attempt it committed a fix that still failed CI, and the 5th attempt finally resolved the finalizer race condition.
 
 ### Failures and What Caused Them
 
