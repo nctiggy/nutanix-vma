@@ -792,3 +792,5 @@ Iteration 14 [2026-03-20T08:58:13Z]: Migration Controller -- VM Creation & Clean
 - Integration tests with many resources (Jobs, ConfigMaps, Hooks) can exhaust TCP ephemeral ports when running alongside other tests
 
 ### Issues: None
+---
+Iteration 15 [2026-03-20T09:30:35Z]: Migration Controller -- Warm Migration (Experimental) COMPLETED. CI passed (run 23336813172). Attempt 1.

@@ -4,11 +4,11 @@
   "totalDurationSeconds": 1825,
   "totalDurationHuman": "30m 25s",
   "maxIterations": 30,
-  "totalIterations": 16,
-  "storiesCompleted": 16,
+  "totalIterations": 17,
+  "storiesCompleted": 17,
   "storiesRemaining": 20,
-  "totalCIRuns": 16,
-  "ciPasses": 16,
+  "totalCIRuns": 17,
+  "ciPasses": 17,
   "ciFails": 0,
   "ciSkipped": 0,
   "noCommitIterations": 0,
@@ -204,6 +204,18 @@
       "endTime": "2026-03-20T08:31:51Z",
       "durationSeconds": 939,
       "durationHuman": "15m 39s",
+      "attemptNumber": 1
+    },
+    {
+      "iteration": 14,
+      "storyId": "US-013c",
+      "storyTitle": "Migration Controller -- VM Creation & Cleanup",
+      "result": "ci_pass",
+      "ciRunId": "23335759684",
+      "startTime": "2026-03-20T08:31:55Z",
+      "endTime": "2026-03-20T08:58:13Z",
+      "durationSeconds": 1578,
+      "durationHuman": "26m 18s",
       "attemptNumber": 1
     }
   ]
