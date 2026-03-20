@@ -479,3 +479,52 @@ Iteration 8 [2026-03-20T06:55:51Z]: VM Builder -- Metadata Translation COMPLETED
 ### Issues: None
 ---
 Iteration 9 [2026-03-20T07:14:09Z]: Validation Engine COMPLETED. CI passed (run 23332815014). Attempt 1.
+
+---
+
+## US-012: Plan Controller
+
+### Status: Implemented, pending CI verification
+
+### What was done:
+- Created internal/controller/plan_controller.go: PlanReconciler reconciles MigrationPlan CRs
+  - Resolves Provider -> Secret -> creates own Nutanix client (NOT from Provider status)
+  - Resolves NetworkMap and StorageMap by name in same namespace
+  - Calls GetVM for each VM in plan, runs validation.Validate() with full ValidationOptions
+  - Target-side validation runs with r.Client (namespace, StorageClass, CDI/KubeVirt CRD checks)
+  - Per-VM status with concerns stored in plan.Status.VMs
+  - Phase transitions: Pending -> Validating -> Ready (no errors) or Error (any errors)
+  - ObservedGeneration check prevents re-validation when plan spec hasn't changed
+  - Error cases (provider not found, secret missing, etc.) set Error phase + Validated=False condition
+  - RBAC markers for plans, providers, maps, secrets, namespaces, storageclasses, CRDs
+- Created internal/controller/plan_controller_test.go: 11 unit tests with fake client
+  - Valid plan -> Ready phase, provider/secret/networkmap/storagemap not found -> Error,
+    GetVM failure -> Error with VM-level concern, GPU VM -> Ready with Warning,
+    unmapped storage -> Error, client factory failure, invalid credentials, custom VM name, not found no-op
+  - Uses apiextensionsv1 to create CRD objects in fake client for target-side validation
+  - allPlanTestObjects helper combines base + target-side objects
+- Created test/integration/plan_test.go: 3 Ginkgo integration tests with envtest + mock server
+  - Valid plan -> Ready phase, GPU VM -> Ready with Warning, unmapped storage -> Error
+  - Shared BeforeEach creates Provider, Secret, NetworkMap, StorageMap, target namespace, StorageClass
+  - Uses IgnoreAlreadyExists for namespace creation to avoid Terminating state conflicts
+- Updated test/integration/suite_test.go: registered PlanReconciler with fast-failing client factory
+- Updated cmd/main.go: registered Plan controller via SetupPlanController
+- Updated provider_controller_test.go: extended fakeNutanixClient.GetVM to support lookup by ExtID
+
+### Verification:
+- `make build` passes
+- `make test` passes (82.9% coverage on internal/controller)
+- `make test-integration` passes (6 of 6 specs: 3 provider + 3 plan)
+- `make lint` passes (0 issues)
+
+### Patterns discovered:
+- ObservedGeneration on Validated condition prevents infinite reconciliation loops when status updates trigger re-reconciliation
+- apiextensionsv1 types can be stored in fake client and retrieved via unstructured Get (for CRD existence checks)
+- Kubernetes namespaces enter Terminating state on delete and can't be recreated until fully gone -- use IgnoreAlreadyExists in integration test BeforeEach
+- unparam linter flags variadic params that always receive nil -- avoid unless multiple call sites pass different values
+- WithRuntimeObjects works for both typed and unstructured objects in the fake client builder
+- Plan controller creates its OWN Nutanix client (not from Provider status) -- enables validation even when Provider is not yet Connected
+
+### Issues: None
+---
+Iteration 10 [2026-03-20T07:37:57Z]: Integration Test Harness + Provider Controller COMPLETED. CI passed (run 23333431957). Attempt 1.

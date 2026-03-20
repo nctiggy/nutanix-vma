@@ -226,7 +226,8 @@
       ],
       "priority": 13,
       "passes": false,
-      "notes": "Depends on Story 2a, 3, 4, 6, and 8a. The Provider controller creates its own Nutanix client from the Provider's Secret."
+      "notes": "Depends on Story 2a, 3, 4, 6, and 8a. The Provider controller creates its own Nutanix client from the Provider's Secret.",
+      "status": "completed"
     },
     {
       "id": "US-012",
