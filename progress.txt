@@ -687,4 +687,55 @@ Iteration 12 [2026-03-20T08:16:08Z]: Migration Controller -- Disk Transfer Phase
 
 ### Issues: None
 ---
-Iteration 13 [2026-03-20T08:31:51Z]: Migration Controller -- Disk Transfer Phases COMPLETED. CI passed (run 23334966543). Attempt 1.
+Iteration 13 [2026-03-20T08:31:51Z]: Migration Controller -- VM Creation & Cleanup COMPLETED. CI passed (run 23334966543). Attempt 1.
+
+---
+
+## US-014: Migration Controller -- Warm Migration (Experimental)
+
+### Status: Implemented, pending CI verification
+
+### What was done:
+- Updated api/v1alpha1/migration_types.go: added warm migration VM phases (BulkCopy, WaitBulkCopy, Precopy, FinalSync), extended WarmMigrationStatus with CBT tracking fields (BaseSnapshotUUID, BaseImageUUIDs, LastPrecopyTime, DeltaSnapshotUUID, DeltaImageUUIDs, DeltaPodName, DeltaDiskIndex, DeltaBytes)
+- Created internal/transfer/delta.go: BuildDeltaPod creates busybox pod + ConfigMap for delta block transfer via wget+dd. RegionsToText and DeltaBytes helpers for changed region processing. CBTBlockSize constant (64KB).
+- Created internal/transfer/delta_test.go: 5 tests (RegionsToText, empty, DeltaBytes, empty, BuildDeltaPod with full verification, empty regions)
+- Extended internal/controller/migration_controller.go with warm migration support:
+  - warmPhaseOrder: Pending->PreHook->StorePowerState->BulkCopy->WaitBulkCopy->Precopy->PowerOff->WaitForPowerOff->FinalSync->CreateVM->StartVM->PostHook->Cleanup->Completed
+  - phaseBulkCopy: creates initial snapshot, exports disk images, creates CDI DataVolumes, initializes warm tracking state
+  - phaseWaitBulkCopy: polls DataVolume status until all Succeeded
+  - phasePrecopy: incremental sync loop with cutover check, interval enforcement, MaxPrecopyRounds limit
+  - phaseFinalSync: final delta after cutover power-off
+  - runDeltaRound: shared logic for snapshot->export->CBT->delta pod creation (used by both Precopy and FinalSync)
+  - checkDeltaPod: polls delta pod status, advances disk index on completion
+  - finalizePrecopyRound: cleans up old base, promotes delta to base, updates stats
+  - finalizeFinalSync: cleans up all temp resources, returns Completed
+  - createDataVolumes/pollDataVolumes: extracted shared helpers from cold phases
+  - getDiskUUID/getDiskSize/isCutoverTime/getPodPhase/deletePod/deleteConfigMap: utility functions
+  - Extended cleanupFailedVM with warm resource cleanup (delta pods, images, snapshots)
+  - advanceSingleVM selects phase order based on plan.Spec.Type (cold vs warm)
+  - nextPhaseInOrder allows warm vs cold phase ordering
+  - Added RBAC marker for pods (get/create/delete)
+- Updated fakeNutanixClient: CBT operations (DiscoverClusterForCBT, GetChangedRegions) return configurable data, CreateRecoveryPoint supports sequential UUID list
+- Added 5 warm migration unit tests: BulkCopy phase, Precopy round, Cutover completes (full pipeline), MaxPrecopyRounds, nextPhaseInOrder/isCutoverTime
+- Added warm migration integration test: end-to-end with cutover, mock CBT data, delta pod status progression
+- Updated suite_test.go: added WithCBTConfig(DefaultCBTConfig()) to mock server
+- Marked US-013c as completed in prd.json
+
+### Verification:
+- `make build` passes
+- `make test` passes (78.5% coverage on internal/controller, 100% on internal/transfer)
+- `make test-integration` passes (8 of 8 specs: 3 provider + 3 plan + 2 migration)
+- `make lint` passes (0 issues)
+
+### Patterns discovered:
+- Warm phase order is a parallel array to cold phaseOrder -- advanceSingleVM selects based on plan type
+- Delta transfer pod uses busybox with wget+dd for MVP -- works for any block-aligned CBT regions
+- Precopy phase acts as a mini-state-machine within the pipeline: checks cutover, checks interval, checks max rounds, manages delta pod lifecycle
+- runDeltaRound is shared between Precopy and FinalSync via callback pattern (onComplete function)
+- WarmMigrationStatus tracks both "base" state (last completed round) and "delta" state (current active round)
+- Sequential disk processing via DeltaDiskIndex -- creates one delta pod per disk per round
+- kubebuilder default values (e.g., MaxPrecopyRounds=10) are NOT applied by fake client in unit tests -- need to handle zero values in code
+- goconst linter catches string literals that match existing constants in the same package across test files
+- unparam linter flags unused function parameters even when they were added for future use -- remove them
+
+### Issues: None
