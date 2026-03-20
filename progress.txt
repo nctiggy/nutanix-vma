@@ -917,3 +917,61 @@ Lint	Run linter	2026-03-20T11:09:16.1265384Z * staticcheck: 2
 Lint	Run linter	2026-03-20T11:09:16.1868224Z make: *** [Makefile:99: lint] Error 1
 Lint	Run linter	2026-03-20T11:09:16.1877252Z ##[error]Process completed with exit code 2.
 ```
+
+CI failure was lint error: staticcheck SA1019 for deprecated mgr.GetEventRecorderFor (from US-017 code).
+
+---
+
+## CI lint fix: deprecated GetEventRecorderFor -> GetEventRecorder
+
+### What was fixed:
+- Migrated from old record.EventRecorder to new events.EventRecorder API (k8s.io/client-go/tools/events)
+- Replaced mgr.GetEventRecorderFor with mgr.GetEventRecorder in migration_controller.go and suite_test.go
+- Updated Recorder field type from record.EventRecorder to events.EventRecorder
+- Updated recordEvent to use Eventf (new events API: regarding, related, type, reason, action, note)
+- Updated integration test event verification from corev1.EventList to eventsv1.EventList
+- Updated unit tests to use events.FakeRecorder instead of record.FakeRecorder
+
+### Patterns discovered:
+- events.EventRecorder.Eventf has different signature: (regarding, related, type, reason, action, note)
+- New events API creates eventsv1.Event objects (events.k8s.io/v1), not corev1.Event (v1)
+- events.FakeRecorder formats events as "type reason note" (same pattern for string matching assertions)
+- eventsv1 scheme is already registered in k8s.io/client-go/kubernetes/scheme
+
+---
+
+## US-018: E2E Test Framework
+
+### Status: Implemented, pending CI verification
+
+### What was done:
+- Replaced kubebuilder-scaffolded e2e tests (Kind-based, CertManager) with Nutanix-specific E2E suite
+- Created test/e2e/e2e_suite_test.go: Ginkgo suite with environment-based configuration
+  - Reads NUTANIX_PC_URL, NUTANIX_USERNAME, NUTANIX_PASSWORD, KUBEVIRT_KUBECONFIG from env
+  - Skips cleanly when NUTANIX_E2E != true
+  - Creates K8s client from kubeconfig and Nutanix client from env credentials
+  - E2EConfig struct holds all configurable params with sensible defaults
+- Created test/e2e/cold_migration_test.go: full cold migration E2E test
+  - Discovers test VM from Nutanix (by ID, name pattern, or first VM in inventory)
+  - Creates Provider, Secret, NetworkMap, StorageMap, Plan, Migration CRs
+  - Dynamically builds NetworkMap/StorageMap from VM's actual NICs and disks
+  - Waits for Migration to reach Completed (20m timeout)
+  - Verifies KubeVirt VM exists with correct source-vm-uuid label
+  - Full cleanup: deletes K8s resources + Nutanix snapshots/images
+- Created test/e2e/warm_migration_test.go: warm migration E2E test (gated behind NUTANIX_WARM_E2E)
+- Created .github/workflows/e2e.yaml: manual dispatch workflow with secrets
+- Updated Makefile: test-e2e target uses Nutanix-based approach (removed Kind dependency)
+
+### Verification:
+- `make build` passes
+- `make lint` passes (0 issues)
+- `go test -tags=e2e ./test/e2e/` skips cleanly without NUTANIX_E2E=true
+- All existing unit tests pass
+
+### Patterns discovered:
+- Nutanix VM type uses Nics (not NICs) -- Go JSON field names
+- ClientConfig uses Timeout (time.Duration) not TimeoutSeconds
+- build tag `e2e` excludes from normal `make test`
+- client.IgnoreAlreadyExists returns nil when err is AlreadyExists
+
+### Issues: None
