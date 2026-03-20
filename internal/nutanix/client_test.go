@@ -19,7 +19,6 @@ package nutanix
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -390,34 +389,8 @@ func TestStubMethods_ReturnNotImplemented(t *testing.T) {
 
 	ctx := context.Background()
 
-	// VM methods are now implemented in vm.go -- skip them here
-
-	_, err = client.CreateRecoveryPoint(ctx, "uuid", "name")
-	assertNotImplemented(t, err, "CreateRecoveryPoint")
-
-	_, err = client.GetRecoveryPoint(ctx, "uuid")
-	assertNotImplemented(t, err, "GetRecoveryPoint")
-
-	err = client.DeleteRecoveryPoint(ctx, "uuid")
-	assertNotImplemented(t, err, "DeleteRecoveryPoint")
-
-	_, err = client.CreateImageFromDisk(ctx, "name", "disk", "cluster")
-	assertNotImplemented(t, err, "CreateImageFromDisk")
-
-	_, err = client.GetImage(ctx, "uuid")
-	assertNotImplemented(t, err, "GetImage")
-
-	err = client.DownloadImage(ctx, "uuid", io.Discard)
-	assertNotImplemented(t, err, "DownloadImage")
-
-	err = client.DeleteImage(ctx, "uuid")
-	assertNotImplemented(t, err, "DeleteImage")
-
-	_, err = client.CloneVMFromRecoveryPoint(ctx, "rp", "name")
-	assertNotImplemented(t, err, "CloneVMFromRecoveryPoint")
-
-	err = client.DeleteVM(ctx, "uuid")
-	assertNotImplemented(t, err, "DeleteVM")
+	// VM methods are implemented in vm.go -- skip them here
+	// Snapshot/image/clone/delete methods are implemented in snapshot.go and image.go -- skip them here
 
 	_, err = client.DiscoverClusterForCBT(ctx, "uuid")
 	assertNotImplemented(t, err, "DiscoverClusterForCBT")

@@ -200,7 +200,7 @@ func TestPollTask_EntitiesAffected(t *testing.T) {
 			ExtID:  "task-entity",
 			Status: TaskStatusSucceeded,
 			EntitiesAffected: []TaskEntity{
-				{ExtID: "vm-uuid-123", Rel: "vmware:vm"},
+				{ExtID: testVMUUID, Rel: "vmware:vm"},
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -225,7 +225,7 @@ func TestPollTask_EntitiesAffected(t *testing.T) {
 	if len(task.EntitiesAffected) != 1 {
 		t.Fatalf("expected 1 entity, got %d", len(task.EntitiesAffected))
 	}
-	if task.EntitiesAffected[0].ExtID != "vm-uuid-123" {
+	if task.EntitiesAffected[0].ExtID != testVMUUID {
 		t.Fatalf("expected entity UUID vm-uuid-123, got %s", task.EntitiesAffected[0].ExtID)
 	}
 }

@@ -28,7 +28,7 @@ import (
 
 func TestListVMs_SinglePage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "GET" || !strings.HasPrefix(r.URL.Path, "/api/vmm/v4.0/ahv/config/vms") {
+		if r.Method != http.MethodGet || !strings.HasPrefix(r.URL.Path, "/api/vmm/v4.0/ahv/config/vms") {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -142,7 +142,7 @@ func TestListVMs_EmptyResult(t *testing.T) {
 
 func TestGetVM(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "GET" {
+		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
@@ -152,7 +152,7 @@ func TestGetVM(t *testing.T) {
 		}
 
 		vm := VM{
-			ExtID:             "vm-uuid-123",
+			ExtID:             testVMUUID,
 			Name:              "test-vm",
 			PowerState:        "ON",
 			NumSockets:        2,
@@ -186,11 +186,11 @@ func TestGetVM(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	vm, err := client.GetVM(context.Background(), "vm-uuid-123")
+	vm, err := client.GetVM(context.Background(), testVMUUID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if vm.ExtID != "vm-uuid-123" {
+	if vm.ExtID != testVMUUID {
 		t.Fatalf("expected vm-uuid-123, got %s", vm.ExtID)
 	}
 	if vm.Name != "test-vm" {
@@ -274,7 +274,7 @@ func TestPowerOffVM(t *testing.T) {
 	}
 
 	hc := client.(*httpClient)
-	err = hc.PowerOffVM(context.Background(), "vm-uuid-123")
+	err = hc.PowerOffVM(context.Background(), testVMUUID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestPowerOnVM(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	err = client.PowerOnVM(context.Background(), "vm-uuid-123")
+	err = client.PowerOnVM(context.Background(), testVMUUID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -318,14 +318,14 @@ func TestPowerOffVM_TaskFails(t *testing.T) {
 
 		if strings.Contains(r.URL.Path, "$actions/power-off") {
 			resp := taskRefResponse{}
-			resp.Data.ExtID = "task-fail"
+			resp.Data.ExtID = testTaskFailID
 			_ = json.NewEncoder(w).Encode(resp)
 			return
 		}
 
 		if strings.Contains(r.URL.Path, "/tasks/") {
 			task := Task{
-				ExtID:         "task-fail",
+				ExtID:         testTaskFailID,
 				Status:        TaskStatusFailed,
 				ErrorMessages: []TaskError{{Message: "VM is already powered off"}},
 			}
@@ -342,7 +342,7 @@ func TestPowerOffVM_TaskFails(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	err = client.PowerOffVM(context.Background(), "vm-uuid-123")
+	err = client.PowerOffVM(context.Background(), testVMUUID)
 	if err == nil {
 		t.Fatal("expected error for failed power-off task")
 	}

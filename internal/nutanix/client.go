@@ -238,42 +238,6 @@ func sleepWithContext(ctx context.Context, d time.Duration) {
 
 // --- Stub implementations for methods to be implemented in later stories ---
 
-func (c *httpClient) CreateRecoveryPoint(_ context.Context, _ string, _ string) (string, error) {
-	return "", errors.New("not implemented: CreateRecoveryPoint")
-}
-
-func (c *httpClient) GetRecoveryPoint(_ context.Context, _ string) (*RecoveryPoint, error) {
-	return nil, errors.New("not implemented: GetRecoveryPoint")
-}
-
-func (c *httpClient) DeleteRecoveryPoint(_ context.Context, _ string) error {
-	return errors.New("not implemented: DeleteRecoveryPoint")
-}
-
-func (c *httpClient) CreateImageFromDisk(_ context.Context, _ string, _ string, _ string) (string, error) {
-	return "", errors.New("not implemented: CreateImageFromDisk")
-}
-
-func (c *httpClient) GetImage(_ context.Context, _ string) (*Image, error) {
-	return nil, errors.New("not implemented: GetImage")
-}
-
-func (c *httpClient) DownloadImage(_ context.Context, _ string, _ io.Writer) error {
-	return errors.New("not implemented: DownloadImage")
-}
-
-func (c *httpClient) DeleteImage(_ context.Context, _ string) error {
-	return errors.New("not implemented: DeleteImage")
-}
-
-func (c *httpClient) CloneVMFromRecoveryPoint(_ context.Context, _ string, _ string) (string, error) {
-	return "", errors.New("not implemented: CloneVMFromRecoveryPoint")
-}
-
-func (c *httpClient) DeleteVM(_ context.Context, _ string) error {
-	return errors.New("not implemented: DeleteVM")
-}
-
 func (c *httpClient) DiscoverClusterForCBT(_ context.Context, _ string) (*CBTClusterInfo, error) {
 	return nil, errors.New("not implemented: DiscoverClusterForCBT")
 }
