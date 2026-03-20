@@ -305,21 +305,172 @@ Updated README with full documentation including ASCII flow diagram of the Ralph
 
 ---
 
-## Phase 5: Ready to Run
+## Phase 5: Ralph Execution
 
-At this point the project has:
-- 7 research documents (~3,000 lines)
-- 1 PRD (v4, 22 stories, 72+ requirements, 4 critic rounds)
-- `scripts/ralph-ci.sh` with CI verification gate and full telemetry
-- Comprehensive README with execution instructions
-- Full prompt log in `docs/how-we-built-this.md`
-- Public repo at https://github.com/nctiggy/nutanix-vma
+### Timeline
 
-Next step: convert the PRD to `prd.json` and run `./scripts/ralph-ci.sh 30`.
+Ralph started at **9:33 PM PDT** (2026-03-19) and the last story code was committed at **4:40 AM PDT** (2026-03-20). The CI verification for the final stories completed at **7:04 AM PDT** after two `ralph-ci.sh` restarts due to script bugs.
+
+| Milestone | Time (PDT) | Elapsed |
+|-----------|-----------|---------|
+| Research + PRD design starts | ~5:30 PM Mar 19 | 0h |
+| PRD v4 complete, pushed to GitHub | 9:33 PM Mar 19 | ~4h |
+| `prd.json` created, Ralph loop starts | 9:41 PM Mar 19 | ~4h 10m |
+| US-001 (Scaffolding) complete | 9:44 PM | +3m |
+| US-002a (CRDs pt 1) complete | 9:50 PM | +9m |
+| US-002b (CRDs pt 2) complete | 9:56 PM | +15m |
+| US-003 CI fails (lint errors) -- loop crashes (bug #1) | 10:01 PM | +20m |
+| Manual fix: `ralph-ci.sh` set -e bug patched | 10:15 PM | +34m |
+| US-003 lint fixed + US-004 implemented in one iteration | 10:22 PM | +41m |
+| US-005 through US-010 (6 stories, no failures) | 10:33 PM - 11:55 PM | +1h 32m - 2h 14m |
+| US-011 (Provider Controller + envtest harness) | 12:11 AM Mar 20 | +2h 30m |
+| US-012 (Plan Controller) | 12:35 AM | +2h 54m |
+| US-013a/b/c (Migration Controller, 3 parts) | 12:51 AM - 1:29 AM | +3h 10m - 3h 48m |
+| US-014 (Warm Migration) | 1:54 AM | +4h 13m |
+| US-015 (Hook System) | 2:27 AM | +4h 46m |
+| US-016 (kubectl plugin) | 2:47 AM | +5h 06m |
+| US-017 CI fails (deprecated API) -- loop crashes (bug #2) | 4:06 AM | +6h 25m |
+| US-017/018/019 code committed before crash | 4:06 AM - 4:40 AM | +6h 25m - 6h 59m |
+| Manual fix: `ralph-ci.sh` pipefail bug patched | 6:22 AM | +8h 41m |
+| US-016 integration test flakiness fixed, marked complete | 7:04 AM | +9h 23m |
+| **All 23 stories implemented** | **4:40 AM** | **~7h coding** |
+| **All CI verified** | **7:04 AM** | **~9.5h total** |
+
+### Overall Stats
+
+| Metric | Value |
+|--------|-------|
+| Total stories | 23 |
+| Stories passing CI on first attempt | 19 of 23 (83%) |
+| Stories requiring retry | 4 (US-003, US-016, US-017, US-016 again) |
+| Total Ralph iterations | ~28 |
+| Total commits | 64 |
+| Implementation commits | 23 |
+| CI verification commits | 21 |
+| Bug fix / debug commits | 8 |
+| Progress.txt update commits | 12 |
+| Wall clock: PRD design | ~4 hours |
+| Wall clock: Ralph coding | ~7 hours |
+| Wall clock: including CI waits + script fixes | ~9.5 hours |
+| `ralph-ci.sh` crashes | 2 (both `set -eo pipefail` issues) |
+
+### Code Output
+
+| Metric | Lines |
+|--------|-------|
+| Go source files | 72 |
+| Production Go code (non-test, non-generated) | 9,019 |
+| Test code | 13,791 |
+| Generated code (deepcopy) | 863 |
+| Config/YAML (CRDs, RBAC, deployment) | 1,975 |
+| **Total Go code** | **22,810** |
+| Test-to-production ratio | **1.53:1** |
+
+### Per-Story Timing
+
+Derived from commit timestamps. "Duration" is time between the story's implementation commit and the previous story's commit (includes Claude thinking + CI wait time).
+
+| Story | Title | Duration | CI Attempts | Notes |
+|-------|-------|----------|-------------|-------|
+| US-001 | Project Scaffolding | 8m | 1 | kubebuilder init + deps |
+| US-002a | CRD Types (Provider/NetworkMap/StorageMap) | 7m | 1 | |
+| US-002b | CRD Types (Plan/Migration/Hook) | 6m | 1 | |
+| US-003 | API Client -- Core + Auth | 5m | 2 | **FAIL**: 3 errcheck + 3 unused lint errors. Loop crashed (bug #1). Fixed in next iteration. |
+| US-004 | API Client -- VM Operations | 4m | 1 | Bundled with US-003 fix in same iteration |
+| US-005 | API Client -- Snapshots & Images | 8m | 1 | |
+| US-006 | API Client -- Networking/Storage/Cluster | 7m | 1 | |
+| US-007 | API Client -- CBT/CRT | 11m | 1 | Complex two-step flow + JWT + pagination |
+| US-008a | Mock Server -- Core | 11m | 1 | 8 files (at budget limit) |
+| US-008b | Mock Server -- Snapshots/Images/CBT | 14m | 1 | + standalone binary |
+| US-009 | VM Builder | 14m | 1 | Comprehensive test fixtures |
+| US-010 | Validation Engine | 15m | 1 | 13 validation rules |
+| US-011 | Provider Controller + envtest | 19m | 1 | Most complex setup (envtest + mock + CRD fixtures) |
+| US-012 | Plan Controller | 24m | 1 | |
+| US-013a | Migration Controller -- Framework | 16m | 1 | State machine + idempotency |
+| US-013b | Migration Controller -- Disk Transfer | 22m | 1 | CDI DataVolumes + credential secrets + CA propagation |
+| US-013c | Migration Controller -- VM Creation | 16m | 1 | + full integration test |
+| US-014 | Warm Migration (Experimental) | 26m | 1 | Longest story -- precopy loop + delta transfer |
+| US-015 | Hook System | 33m | 1 | |
+| US-016 | kubectl Plugin | 20m | 5 | **FAIL x4**: Flaky integration test (finalizer race condition). Eventually fixed by splitting finalizer update from status update. |
+| US-017 | Observability | 19m | 2 | **FAIL**: Deprecated `GetEventRecorderFor` (staticcheck SA1019). Loop crashed (bug #2). Fixed in next iteration. |
+| US-018 | E2E Test Framework | 6m | 1 | Fast -- mostly test scaffolding |
+| US-019 | Documentation & Release | 5m | 1 | README rewrite + CONTRIBUTING.md + release workflow |
+
+### Failures and What Caused Them
+
+#### Failure 1: US-003 -- Lint Errors (Iteration 4)
+
+**What failed**: `errcheck` (3 unchecked `resp.Body.Close()` return values) and `unused` (3 symbols: `pollTask`, `defaultPollInterval`, `defaultPollTimeout` -- declared but not called by any exported code yet).
+
+**Why Ralph missed it locally**: Ralph ran `make build && make test` which passed, but didn't run `make lint`. The lint errors were only caught by the CI pipeline.
+
+**How it was fixed**: Next iteration (fresh context) read the failure logs from `progress.txt`, changed `resp.Body.Close()` to `_ = resp.Body.Close()`, and had `pollTaskWithOptions` call `pollTask` internally to eliminate the unused warning.
+
+**Infrastructure issue**: This failure also exposed **bug #1 in ralph-ci.sh** -- `set -euo pipefail` caused the script to exit when `gh run watch --exit-status` returned non-zero. The failure handler never ran. Had to manually patch the script and write failure context to `progress.txt`.
+
+#### Failure 2: US-016 -- Flaky Integration Test (Iterations ~18-22)
+
+**What failed**: Integration test for the kubectl plugin was timing-dependent. A race condition between the finalizer update and the status update in the migration controller caused intermittent test failures. The test would sometimes see the migration in a partially-updated state.
+
+**Why it was flaky**: The migration controller was doing two separate updates (finalizer + status) in the same reconcile. When envtest processed them, the test's `Eventually` block sometimes caught the intermediate state.
+
+**How it was fixed**: After 4 failed attempts, the 5th iteration split the finalizer update and status update into separate reconcile passes. This is a known controller-runtime pattern -- you can't update both `metadata` (finalizer) and `status` in the same API call.
+
+**Impact**: This was the most expensive failure -- 5 attempts. Each attempt spawned a fresh Claude context that tried different approaches before landing on the correct fix.
+
+#### Failure 3: US-017 -- Deprecated API (Iteration ~25)
+
+**What failed**: `staticcheck SA1019` flagged `mgr.GetEventRecorderFor()` as deprecated. The replacement is `mgr.GetEventRecorder()` (no "For" suffix, no name argument).
+
+**Why Ralph used the deprecated API**: The controller-runtime version in use had both methods available, but the newer one was preferred. Ralph's training data likely included examples using the older API.
+
+**How it was fixed**: Next iteration (fresh context) read the failure context, did a simple find-and-replace in both `migration_controller.go` and `test/integration/suite_test.go`.
+
+**Infrastructure issue**: This also exposed **bug #2 in ralph-ci.sh** -- the same `pipefail` issue as bug #1, but in a different code path. The pipe `gh run watch | tail -20 || true` still failed because `pipefail` propagates the first command's exit code through the pipe. Fixed by writing to a temp file instead of piping.
+
+### ralph-ci.sh Bugs Discovered During Execution
+
+| Bug | Root Cause | Impact | Fix |
+|-----|-----------|--------|-----|
+| **Bug #1**: Script exits on CI failure instead of continuing | `set -euo pipefail` + `gh run watch --exit-status` returns non-zero | Loop dies silently; failure handler never runs; no logs written to progress.txt | Added `\|\| true` to `gh run watch` call |
+| **Bug #2**: Same crash despite Bug #1 fix | `pipefail` makes pipe exit code come from `gh run watch` (first cmd), not `tail` (last cmd). `\|\| true` only catches `tail`'s exit. | Same as Bug #1 -- loop dies on CI failure | Replaced pipe with temp file + separate `tail` |
+
+Both bugs had the same symptom (silent exit on CI failure) but different root causes. The lesson: `set -o pipefail` and `|| true` don't compose the way you'd expect when the failing command is not the last in a pipe.
+
+---
+
+## Phase 6: Results
+
+### What Was Built
+
+A fully functional Kubernetes operator for migrating Nutanix AHV VMs to KubeVirt:
+
+- **6 CRDs**: NutanixProvider, NetworkMap, StorageMap, MigrationPlan, Migration, Hook
+- **Custom Nutanix API client**: 20 methods covering VMs, snapshots, images, CBT, networking, storage, cluster discovery. Built on `net/http`, not the auto-generated SDK.
+- **Mock Nutanix API server**: In-process test helper + standalone binary. Simulates all endpoints including async tasks, CBT, image downloads with Range headers.
+- **VM metadata builder**: Translates Nutanix VM config to KubeVirt VirtualMachine spec (CPU topology, firmware, disks, NICs, machine type, name sanitization).
+- **Validation engine**: 13 pre-flight rules with target-side validation (StorageClass, NAD, CDI/KubeVirt existence).
+- **3 controllers**: Provider (inventory), Plan (validation), Migration (cold + warm pipeline with idempotent phases).
+- **Transfer manager**: CDI DataVolume creation with credential secrets, CA propagation, progress tracking.
+- **Warm migration**: CBT-based precopy loop with delta transfer (experimental).
+- **Hook system**: Pre/post migration K8s Jobs with mounted context.
+- **kubectl plugin**: `kubectl vma inventory/plan/migrate/status/cancel`.
+- **Observability**: K8s Events, structured logging, Prometheus metrics.
+- **E2E test framework**: Ginkgo suite gated behind `NUTANIX_E2E=true`.
+- **CI/CD**: GitHub Actions (lint + build + test + integration), release workflow.
+
+### What Remains
+
+1. **Real Nutanix cluster validation** -- all API behavior is based on documentation, not testing
+2. **Warm migration data source** -- need to confirm HTTP Range header support on Image Service
+3. **Cold export fallback path** -- clone-from-recovery-point fallback not yet implemented (deferred from US-013b)
+4. **PE authentication** -- need to verify if PC credentials propagate to PE API calls
 
 ---
 
 ## Takeaways
+
+### Design Phase
 
 1. **Research first, PRD second**: The 7 research documents (~3,000 lines) took significant time but saved far more by catching issues early. The KVM-to-KVM insight shaped the entire architecture.
 
@@ -330,3 +481,19 @@ Next step: convert the PRD to `prd.json` and run `./scripts/ralph-ci.sh 30`.
 4. **Story sizing is the hardest part of Ralph PRDs**: 4 of the 7 final-round issues were about stories being too large or having incorrect dependencies. Every story must produce code that compiles and passes tests -- this is a much harder constraint than traditional sprint planning.
 
 5. **Assumptions must be flagged, not hidden**: The biggest technical risk (warm migration delta data source) was in the research from the start but only properly flagged after Codex called it out. Unverified assumptions in PRDs become bugs in code.
+
+### Execution Phase
+
+6. **83% first-pass CI rate is good but not great**: 19 of 23 stories passed CI on the first attempt. The 4 failures were: lint errors (Ralph didn't run `make lint` locally), a flaky integration test (race condition in envtest), a deprecated API (training data lag), and the same flaky test again. Adding `make lint` to the Ralph prompt would have prevented 2 of the 4 failures.
+
+7. **Fresh context windows for debugging really work**: When US-003 failed lint, the next iteration (fresh Claude context) read the failure logs and fixed it cleanly. This validates the core thesis: a new context without the prior attempt's assumptions debugs more efficiently than continuing in a stuck context.
+
+8. **Flaky tests are the worst failure mode for Ralph**: US-016's integration test failed 4 times before the 5th iteration found the root cause (a controller-runtime pattern issue with finalizer + status in the same reconcile). Each failed attempt was a full fresh-context iteration. Flaky tests waste iterations because each fresh context tries a different hypothesis.
+
+9. **The CI verification gate caught real problems**: Without it, Ralph would have marked US-003 and US-017 as complete despite lint failures. The "push -> verify CI -> then mark complete" pattern ensures the codebase is actually green, not just locally green.
+
+10. **Infrastructure code (the wrapper script) needs testing too**: `ralph-ci.sh` had 2 bugs in a 300-line bash script, both caused by `set -o pipefail` interacting with `|| true` in non-obvious ways. The lesson: test your test infrastructure. Both bugs silently killed the loop when CI failed -- exactly the scenario the script was designed to handle.
+
+11. **Ralph sometimes does extra work**: In one iteration, Claude fixed US-003's lint errors AND implemented US-004 in the same context window. The script only tracked one story per iteration, causing a tracking mismatch. Not a big problem (Claude is smart enough to skip already-implemented work), but the script's display lagged reality.
+
+12. **~23,000 lines of Go in ~7 hours is remarkable**: Even accounting for the ~60% test code ratio, Ralph produced ~9,000 lines of production code (operator, API client, mock server, builder, validation, CLI) in a single overnight session. The code compiles, passes lint, and passes integration tests. The question is whether it works against real infrastructure -- that's the next phase.
