@@ -573,3 +573,69 @@ Iteration 10 [2026-03-20T07:37:57Z]: Integration Test Harness + Provider Control
 ### Issues: None
 ---
 Iteration 11 [2026-03-20T07:54:00Z]: Plan Controller COMPLETED. CI passed (run 23333867736). Attempt 1.
+
+---
+
+## US-013b: Migration Controller -- Disk Transfer Phases
+
+### Status: Implemented, pending CI verification
+
+### What was done:
+- Registered KubeVirt and CDI API schemes in cmd/main.go (kubevirtv1.AddToScheme, cdiv1beta1.AddToScheme) -- replacing blank imports
+- Created internal/transfer/datavolume.go: BuildDataVolume() constructs CDI DataVolume with HTTP source, PVC spec (StorageClass, VolumeMode, AccessMode, size from disk), owner reference, credential secret ref, optional CA ConfigMap
+- Created internal/transfer/manager.go: Transfer lifecycle Manager with:
+  - CreateCredentialSecret (accessKeyId/secretKey format for CDI HTTP auth, idempotent)
+  - CreateCAConfigMap (CA cert PEM in ConfigMap, idempotent, no-op when no CA)
+  - CreateDataVolume (idempotent, delegates to BuildDataVolume)
+  - GetDataVolumeProgress (polls DataVolume phase + progress percentage)
+  - DeleteCredentialSecret / DeleteCAConfigMap (idempotent cleanup)
+  - ImageDownloadURL (constructs Prism image download URL: {prismURL}/api/vmm/v4.0/images/{uuid}/file)
+  - FindStorageMapping (matches disk's StorageContainerRef against StorageMap by ID or name)
+- Rewrote internal/controller/migration_controller.go with real phase implementations:
+  - Added migrationContext struct: holds resolved NutanixClient, Plan, Provider, Secret, NetworkMap, StorageMap, TransferMgr
+  - resolveMigrationContext: resolves Provider -> Secret -> NutanixClient -> NetworkMap -> StorageMap -> TransferMgr (mirrors plan_controller pattern)
+  - phaseStorePowerState: GetVMPowerState -> store in vmStatus.OriginalPowerState (idempotent)
+  - phasePowerOff: PowerOffVM via Nutanix API; skips if already OFF (idempotent)
+  - phaseWaitForPowerOff: polls GetVMPowerState until OFF; returns Completed:false for requeue
+  - phaseCreateSnapshot: CreateRecoveryPoint, stores UUID in vmStatus.SnapshotUUID (idempotent)
+  - phaseExportDisks: GetVM -> filterDataDisks (CDROM skipped) -> CreateImageFromDisk per disk using BackingInfo.VMDiskUUID, stores UUIDs in vmStatus.ImageUUIDs (idempotent, resumes from last exported disk)
+  - phaseImportDisks: creates credential secret + CA ConfigMap (if needed) + CDI DataVolumes per image, polls DV status (Succeeded/Failed/in-progress), returns Completed:false while importing (requeue)
+  - PreHook, CreateVM, StartVM, PostHook, Cleanup remain stubs (US-013c/US-015)
+  - executePhase dispatches to real handlers via switch on vmStatus.Phase
+  - filterDataDisks and shortID utility functions
+  - New RBAC markers: secrets create/delete, configmaps create/delete, datavolumes CRUD, providers/networkmaps/storagemaps get
+- Enhanced fakeNutanixClient in provider_controller_test.go:
+  - PowerOffVM: updates powerState to OFF (configurable error)
+  - GetVMPowerState: returns configurable powerState (default ON)
+  - CreateRecoveryPoint: returns configurable UUID (default "rp-uuid-001")
+  - CreateImageFromDisk: returns from configurable UUID list (sequential)
+  - DeleteRecoveryPoint, DeleteImage: configurable errors
+- Rewrote migration_controller_test.go with 18 tests:
+  - Full pipeline (StorePowerState -> PowerOff -> Snapshot -> Export -> Import -> wait DV -> complete)
+  - Already powered off (skips PowerOff), PowerOff failure, Snapshot failure, ExportDisks failure
+  - Multi-disk VM (2 DISK + 1 CDROM -> 2 images, 2 DVs, CDROM skipped)
+  - DataVolume failure (DV marked Failed -> VM fails)
+  - MaxInFlight=1 with 2 VMs (concurrent scheduling)
+  - Cancellation, Finalizer add, Deletion blocked/allowed, NotFound, PlanNotFound, ProviderNotFound
+  - Idempotent re-reconcile, Snapshot UUID idempotency
+  - filterDataDisks, shortID, nextPhase, isTerminalVMPhase, isActiveVMPhase helpers
+- Created internal/transfer/datavolume_test.go: 3 tests (basic, with cert ConfigMap, small disk)
+- Created internal/transfer/manager_test.go: 17 tests (credential secret CRUD + idempotent, CA ConfigMap CRUD + no cert + idempotent, ImageDownloadURL + trailing slash, FindStorageMapping by ID/name/no match/nil backing, CreateDataVolume + idempotent, GetDataVolumeProgress succeeded/in-progress/not-found, Delete credential + CA idempotent)
+
+### Verification:
+- `make build` passes
+- `make test` passes (84.9% coverage on internal/controller, 100% on internal/transfer)
+- `make test-integration` passes (6 of 6 existing specs unaffected)
+- `make lint` passes (0 issues)
+
+### Patterns discovered:
+- fake client WithStatusSubresource must include cdiv1beta1.DataVolume{} for Status().Update() to work on DataVolumes in tests
+- go fmt auto-reorders imports: CDI/KubeVirt third-party imports go in separate group from k8s.io and sigs.k8s.io
+- unparam linter catches test helper params that always receive same value -- remove params, inline the default
+- CDI DataVolumeSourceHTTP.SecretRef expects accessKeyId/secretKey keys in the secret (not username/password)
+- CDI DataVolume status phases: Pending, ImportScheduled, ImportInProgress, Succeeded, Failed (plus many more for clone/upload)
+- TransferMgr uses same client.Client as the controller (no separate connection)
+- migrationContext pattern: resolve all references once per reconcile, pass through to phase handlers
+- filterDataDisks must use strings.ToUpper for case-insensitive CDROM comparison
+
+### Issues: None

@@ -46,6 +46,19 @@ type fakeNutanixClient struct {
 	listClustersErr   error
 	listContainersErr error
 	getVMErr          error
+
+	// Migration phase behavior
+	powerOffErr      error
+	powerOnErr       error
+	powerState       nutanix.PowerState
+	powerStateErr    error
+	createRPErr      error
+	createRPUUID     string
+	createImageErr   error
+	createImageUUIDs []string
+	createImageIdx   int
+	deleteRPErr      error
+	deleteImageErr   error
 }
 
 func (f *fakeNutanixClient) ListVMs(_ context.Context) ([]nutanix.VM, error) {
@@ -65,19 +78,36 @@ func (f *fakeNutanixClient) GetVM(_ context.Context, uuid string) (*nutanix.VM, 
 }
 
 func (f *fakeNutanixClient) PowerOffVM(_ context.Context, _ string) error {
-	return errors.New("not implemented")
+	if f.powerOffErr != nil {
+		return f.powerOffErr
+	}
+	f.powerState = nutanix.PowerStateOff
+	return nil
 }
 
 func (f *fakeNutanixClient) PowerOnVM(_ context.Context, _ string) error {
-	return errors.New("not implemented")
+	return f.powerOnErr
 }
 
 func (f *fakeNutanixClient) GetVMPowerState(_ context.Context, _ string) (nutanix.PowerState, error) {
-	return "", errors.New("not implemented")
+	if f.powerStateErr != nil {
+		return "", f.powerStateErr
+	}
+	if f.powerState == "" {
+		return nutanix.PowerStateOn, nil
+	}
+	return f.powerState, nil
 }
 
 func (f *fakeNutanixClient) CreateRecoveryPoint(_ context.Context, _, _ string) (string, error) {
-	return "", errors.New("not implemented")
+	if f.createRPErr != nil {
+		return "", f.createRPErr
+	}
+	uuid := f.createRPUUID
+	if uuid == "" {
+		uuid = "rp-uuid-001"
+	}
+	return uuid, nil
 }
 
 func (f *fakeNutanixClient) GetRecoveryPoint(_ context.Context, _ string) (*nutanix.RecoveryPoint, error) {
@@ -85,11 +115,19 @@ func (f *fakeNutanixClient) GetRecoveryPoint(_ context.Context, _ string) (*nuta
 }
 
 func (f *fakeNutanixClient) DeleteRecoveryPoint(_ context.Context, _ string) error {
-	return errors.New("not implemented")
+	return f.deleteRPErr
 }
 
 func (f *fakeNutanixClient) CreateImageFromDisk(_ context.Context, _, _, _ string) (string, error) {
-	return "", errors.New("not implemented")
+	if f.createImageErr != nil {
+		return "", f.createImageErr
+	}
+	if f.createImageIdx < len(f.createImageUUIDs) {
+		uuid := f.createImageUUIDs[f.createImageIdx]
+		f.createImageIdx++
+		return uuid, nil
+	}
+	return "img-uuid-default", nil
 }
 
 func (f *fakeNutanixClient) GetImage(_ context.Context, _ string) (*nutanix.Image, error) {
@@ -101,7 +139,7 @@ func (f *fakeNutanixClient) DownloadImage(_ context.Context, _ string, _ io.Writ
 }
 
 func (f *fakeNutanixClient) DeleteImage(_ context.Context, _ string) error {
-	return errors.New("not implemented")
+	return f.deleteImageErr
 }
 
 func (f *fakeNutanixClient) CloneVMFromRecoveryPoint(_ context.Context, _, _ string) (string, error) {

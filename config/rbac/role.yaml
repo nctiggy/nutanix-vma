@@ -7,6 +7,14 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - configmaps
+  verbs:
+  - create
+  - delete
+  - get
+- apiGroups:
+  - ""
+  resources:
   - namespaces
   verbs:
   - get
@@ -15,6 +23,8 @@ rules:
   resources:
   - secrets
   verbs:
+  - create
+  - delete
   - get
   - list
   - watch
@@ -24,6 +34,15 @@ rules:
   - customresourcedefinitions
   verbs:
   - get
+- apiGroups:
+  - cdi.kubevirt.io
+  resources:
+  - datavolumes
+  verbs:
+  - create
+  - delete
+  - get
+  - list
 - apiGroups:
   - storage.k8s.io
   resources:

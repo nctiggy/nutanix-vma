@@ -25,9 +25,9 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
-	// KubeVirt and CDI APIs -- imported for scheme registration in later stories
-	_ "kubevirt.io/api/core/v1"
-	_ "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
+	// KubeVirt and CDI APIs
+	kubevirtv1 "kubevirt.io/api/core/v1"
+	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 
 	vmav1alpha1 "github.com/nctiggy/nutanix-vma/api/v1alpha1"
 	"github.com/nctiggy/nutanix-vma/internal/controller"
@@ -51,6 +51,8 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(vmav1alpha1.AddToScheme(scheme))
+	utilruntime.Must(kubevirtv1.AddToScheme(scheme))
+	utilruntime.Must(cdiv1beta1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 

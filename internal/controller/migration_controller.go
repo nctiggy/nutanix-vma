@@ -19,12 +19,15 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -32,6 +35,7 @@ import (
 
 	vmav1alpha1 "github.com/nctiggy/nutanix-vma/api/v1alpha1"
 	"github.com/nctiggy/nutanix-vma/internal/nutanix"
+	"github.com/nctiggy/nutanix-vma/internal/transfer"
 )
 
 const (
@@ -66,6 +70,19 @@ type PhaseResult struct {
 	Error error
 }
 
+// migrationContext holds all resolved references needed to execute
+// migration phases. Built once per reconcile.
+type migrationContext struct {
+	NutanixClient nutanix.NutanixClient
+	Plan          *vmav1alpha1.MigrationPlan
+	NetworkMap    *vmav1alpha1.NetworkMap
+	StorageMap    *vmav1alpha1.StorageMap
+	Provider      *vmav1alpha1.NutanixProvider
+	Migration     *vmav1alpha1.Migration
+	Secret        *corev1.Secret
+	TransferMgr   *transfer.Manager
+}
+
 // MigrationReconciler reconciles Migration objects.
 type MigrationReconciler struct {
 	client.Client
@@ -83,6 +100,13 @@ func SetupMigrationController(mgr ctrl.Manager) error {
 // +kubebuilder:rbac:groups=vma.nutanix.io,resources=migrations,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=vma.nutanix.io,resources=migrations/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=vma.nutanix.io,resources=migrations/finalizers,verbs=update
+// +kubebuilder:rbac:groups=vma.nutanix.io,resources=migrationplans,verbs=get
+// +kubebuilder:rbac:groups=vma.nutanix.io,resources=nutanixproviders,verbs=get
+// +kubebuilder:rbac:groups=vma.nutanix.io,resources=networkmaps,verbs=get
+// +kubebuilder:rbac:groups=vma.nutanix.io,resources=storagemaps,verbs=get
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;delete
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;create;delete
+// +kubebuilder:rbac:groups=cdi.kubevirt.io,resources=datavolumes,verbs=get;list;create;delete
 
 // Reconcile handles Migration reconciliation.
 func (r *MigrationReconciler) Reconcile(
@@ -129,6 +153,14 @@ func (r *MigrationReconciler) Reconcile(
 				migration.Spec.PlanRef.Name, err))
 	}
 
+	// Resolve all references for phase execution
+	mctx, err := r.resolveMigrationContext(ctx, migration, plan)
+	if err != nil {
+		logger.Error(err, "Failed to resolve migration context")
+		return r.setMigrationFailed(ctx, migration,
+			fmt.Sprintf("Failed to resolve references: %v", err))
+	}
+
 	// Initialize VM statuses on first reconcile
 	if migration.Status.Phase == "" ||
 		migration.Status.Phase == vmav1alpha1.MigrationPhasePending {
@@ -151,7 +183,7 @@ func (r *MigrationReconciler) Reconcile(
 
 	// Schedule and advance VMs
 	maxInFlight := max(plan.Spec.MaxInFlight, 1)
-	needsRequeue := r.advanceVMs(ctx, migration, maxInFlight)
+	needsRequeue := r.advanceVMs(ctx, migration, maxInFlight, mctx)
 
 	// Update overall migration status
 	r.updateOverallStatus(migration)
@@ -169,6 +201,97 @@ func (r *MigrationReconciler) Reconcile(
 	logger.Info("Migration reconciliation complete",
 		"phase", migration.Status.Phase)
 	return ctrl.Result{}, nil
+}
+
+// resolveMigrationContext resolves all references needed for migration phases.
+func (r *MigrationReconciler) resolveMigrationContext(
+	ctx context.Context,
+	migration *vmav1alpha1.Migration,
+	plan *vmav1alpha1.MigrationPlan,
+) (*migrationContext, error) {
+	// Resolve Provider
+	provider := &vmav1alpha1.NutanixProvider{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      plan.Spec.ProviderRef.Name,
+		Namespace: migration.Namespace,
+	}, provider); err != nil {
+		return nil, fmt.Errorf(
+			"provider %q not found: %w",
+			plan.Spec.ProviderRef.Name, err)
+	}
+
+	// Read credentials
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      provider.Spec.SecretRef.Name,
+		Namespace: provider.Namespace,
+	}, secret); err != nil {
+		return nil, fmt.Errorf(
+			"provider secret %q not found: %w",
+			provider.Spec.SecretRef.Name, err)
+	}
+
+	username := string(secret.Data["username"])
+	password := string(secret.Data["password"])
+	if username == "" || password == "" {
+		return nil, fmt.Errorf(
+			"provider secret must contain non-empty " +
+				"'username' and 'password' keys")
+	}
+
+	// Create Nutanix client
+	nxClient, err := r.ClientFactory(nutanix.ClientConfig{
+		Host:               provider.Spec.URL,
+		Username:           username,
+		Password:           password,
+		InsecureSkipVerify: provider.Spec.InsecureSkipVerify,
+	})
+	if err != nil {
+		return nil, fmt.Errorf(
+			"failed to create Nutanix client: %w", err)
+	}
+
+	// Resolve NetworkMap
+	networkMap := &vmav1alpha1.NetworkMap{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      plan.Spec.NetworkMapRef.Name,
+		Namespace: migration.Namespace,
+	}, networkMap); err != nil {
+		return nil, fmt.Errorf(
+			"NetworkMap %q not found: %w",
+			plan.Spec.NetworkMapRef.Name, err)
+	}
+
+	// Resolve StorageMap
+	storageMap := &vmav1alpha1.StorageMap{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      plan.Spec.StorageMapRef.Name,
+		Namespace: migration.Namespace,
+	}, storageMap); err != nil {
+		return nil, fmt.Errorf(
+			"StorageMap %q not found: %w",
+			plan.Spec.StorageMapRef.Name, err)
+	}
+
+	// Build transfer manager
+	transferMgr := &transfer.Manager{
+		Client:   r.Client,
+		PrismURL: provider.Spec.URL,
+		Username: username,
+		Password: password,
+		Insecure: provider.Spec.InsecureSkipVerify,
+	}
+
+	return &migrationContext{
+		NutanixClient: nxClient,
+		Plan:          plan,
+		NetworkMap:    networkMap,
+		StorageMap:    storageMap,
+		Provider:      provider,
+		Migration:     migration,
+		Secret:        secret,
+		TransferMgr:   transferMgr,
+	}, nil
 }
 
 // initializeVMStatuses creates per-VM status entries from the Plan.
@@ -224,6 +347,7 @@ func (r *MigrationReconciler) advanceVMs(
 	ctx context.Context,
 	migration *vmav1alpha1.Migration,
 	maxInFlight int,
+	mctx *migrationContext,
 ) bool {
 	needsRequeue := false
 
@@ -254,7 +378,7 @@ func (r *MigrationReconciler) advanceVMs(
 		}
 
 		// Advance active VM through phases
-		if r.advanceSingleVM(ctx, vm) {
+		if r.advanceSingleVM(ctx, vm, mctx) {
 			needsRequeue = true
 		}
 	}
@@ -265,15 +389,16 @@ func (r *MigrationReconciler) advanceVMs(
 // advanceSingleVM advances a single VM through the phase pipeline.
 // Returns true if the VM needs further processing (requeue).
 func (r *MigrationReconciler) advanceSingleVM(
-	_ context.Context,
+	ctx context.Context,
 	vmStatus *vmav1alpha1.VMMigrationStatus,
+	mctx *migrationContext,
 ) bool {
 	for {
 		if isTerminalVMPhase(vmStatus.Phase) {
 			return false
 		}
 
-		result := r.executePhase(vmStatus)
+		result := r.executePhase(ctx, vmStatus, mctx)
 		if result.Error != nil {
 			vmStatus.Phase = vmav1alpha1.VMPhaseFailed
 			vmStatus.Error = result.Error.Error()
@@ -296,11 +421,298 @@ func (r *MigrationReconciler) advanceSingleVM(
 	}
 }
 
-// executePhase runs the current phase for a VM.
-// All phases are stubs in US-013a -- real implementations in US-013b/c.
+// executePhase dispatches to the appropriate phase handler.
 func (r *MigrationReconciler) executePhase(
-	_ *vmav1alpha1.VMMigrationStatus,
+	ctx context.Context,
+	vmStatus *vmav1alpha1.VMMigrationStatus,
+	mctx *migrationContext,
 ) PhaseResult {
+	switch vmStatus.Phase {
+	case vmav1alpha1.VMPhaseStorePowerState:
+		return r.phaseStorePowerState(ctx, vmStatus, mctx)
+	case vmav1alpha1.VMPhasePowerOff:
+		return r.phasePowerOff(ctx, vmStatus, mctx)
+	case vmav1alpha1.VMPhaseWaitForPowerOff:
+		return r.phaseWaitForPowerOff(ctx, vmStatus, mctx)
+	case vmav1alpha1.VMPhaseCreateSnapshot:
+		return r.phaseCreateSnapshot(ctx, vmStatus, mctx)
+	case vmav1alpha1.VMPhaseExportDisks:
+		return r.phaseExportDisks(ctx, vmStatus, mctx)
+	case vmav1alpha1.VMPhaseImportDisks:
+		return r.phaseImportDisks(ctx, vmStatus, mctx)
+	default:
+		// PreHook, CreateVM, StartVM, PostHook, Cleanup are stubs (US-013c/US-015)
+		return PhaseResult{Completed: true}
+	}
+}
+
+// phaseStorePowerState records the VM's current power state.
+func (r *MigrationReconciler) phaseStorePowerState(
+	ctx context.Context,
+	vmStatus *vmav1alpha1.VMMigrationStatus,
+	mctx *migrationContext,
+) PhaseResult {
+	if vmStatus.OriginalPowerState != "" {
+		return PhaseResult{Completed: true}
+	}
+
+	state, err := mctx.NutanixClient.GetVMPowerState(
+		ctx, vmStatus.ID)
+	if err != nil {
+		return PhaseResult{Error: fmt.Errorf(
+			"StorePowerState: %w", err)}
+	}
+	vmStatus.OriginalPowerState = string(state)
+	return PhaseResult{Completed: true}
+}
+
+// phasePowerOff powers off the source VM. Skips if already off.
+func (r *MigrationReconciler) phasePowerOff(
+	ctx context.Context,
+	vmStatus *vmav1alpha1.VMMigrationStatus,
+	mctx *migrationContext,
+) PhaseResult {
+	if vmStatus.OriginalPowerState == string(nutanix.PowerStateOff) {
+		return PhaseResult{Completed: true}
+	}
+
+	if err := mctx.NutanixClient.PowerOffVM(
+		ctx, vmStatus.ID); err != nil {
+		return PhaseResult{Error: fmt.Errorf(
+			"PowerOff: %w", err)}
+	}
+	return PhaseResult{Completed: true}
+}
+
+// phaseWaitForPowerOff verifies the VM is powered off.
+func (r *MigrationReconciler) phaseWaitForPowerOff(
+	ctx context.Context,
+	vmStatus *vmav1alpha1.VMMigrationStatus,
+	mctx *migrationContext,
+) PhaseResult {
+	state, err := mctx.NutanixClient.GetVMPowerState(
+		ctx, vmStatus.ID)
+	if err != nil {
+		return PhaseResult{Error: fmt.Errorf(
+			"WaitForPowerOff: %w", err)}
+	}
+	if state != nutanix.PowerStateOff {
+		return PhaseResult{Completed: false}
+	}
+	return PhaseResult{Completed: true}
+}
+
+// phaseCreateSnapshot creates a recovery point for the VM.
+// Idempotent: skips if SnapshotUUID is already set.
+func (r *MigrationReconciler) phaseCreateSnapshot(
+	ctx context.Context,
+	vmStatus *vmav1alpha1.VMMigrationStatus,
+	mctx *migrationContext,
+) PhaseResult {
+	if vmStatus.SnapshotUUID != "" {
+		return PhaseResult{Completed: true}
+	}
+
+	name := fmt.Sprintf("vma-%s-%s",
+		mctx.Migration.Name, shortID(vmStatus.ID))
+	uuid, err := mctx.NutanixClient.CreateRecoveryPoint(
+		ctx, vmStatus.ID, name)
+	if err != nil {
+		return PhaseResult{Error: fmt.Errorf(
+			"CreateSnapshot: %w", err)}
+	}
+	vmStatus.SnapshotUUID = uuid
+	return PhaseResult{Completed: true}
+}
+
+// phaseExportDisks creates Nutanix images from each data disk.
+// Idempotent: skips disks that already have image UUIDs.
+func (r *MigrationReconciler) phaseExportDisks(
+	ctx context.Context,
+	vmStatus *vmav1alpha1.VMMigrationStatus,
+	mctx *migrationContext,
+) PhaseResult {
+	vm, err := mctx.NutanixClient.GetVM(ctx, vmStatus.ID)
+	if err != nil {
+		return PhaseResult{Error: fmt.Errorf(
+			"ExportDisks: failed to get VM: %w", err)}
+	}
+
+	dataDisks := filterDataDisks(vm.Disks)
+	if len(vmStatus.ImageUUIDs) >= len(dataDisks) {
+		return PhaseResult{Completed: true}
+	}
+
+	clusterRef := ""
+	if vm.Cluster != nil {
+		clusterRef = vm.Cluster.ExtID
+	}
+
+	for i, disk := range dataDisks {
+		if i < len(vmStatus.ImageUUIDs) {
+			continue
+		}
+
+		diskUUID := ""
+		if disk.BackingInfo != nil {
+			diskUUID = disk.BackingInfo.VMDiskUUID
+		}
+		if diskUUID == "" {
+			diskUUID = disk.ExtID
+		}
+
+		name := fmt.Sprintf("vma-%s-%s-disk-%d",
+			mctx.Migration.Name, shortID(vmStatus.ID), i)
+		imageUUID, createErr := mctx.NutanixClient.CreateImageFromDisk(
+			ctx, name, diskUUID, clusterRef)
+		if createErr != nil {
+			return PhaseResult{Error: fmt.Errorf(
+				"ExportDisks: disk %d: %w", i, createErr)}
+		}
+		vmStatus.ImageUUIDs = append(
+			vmStatus.ImageUUIDs, imageUUID)
+	}
+
+	return PhaseResult{Completed: true}
+}
+
+// phaseImportDisks creates CDI DataVolumes to import disk images into
+// the target cluster. Polls DataVolume status until all succeed.
+func (r *MigrationReconciler) phaseImportDisks(
+	ctx context.Context,
+	vmStatus *vmav1alpha1.VMMigrationStatus,
+	mctx *migrationContext,
+) PhaseResult {
+	vm, err := mctx.NutanixClient.GetVM(ctx, vmStatus.ID)
+	if err != nil {
+		return PhaseResult{Error: fmt.Errorf(
+			"ImportDisks: failed to get VM: %w", err)}
+	}
+
+	dataDisks := filterDataDisks(vm.Disks)
+	targetNS := mctx.Plan.Spec.TargetNamespace
+	migName := mctx.Migration.Name
+
+	// Owner reference for cleanup
+	ownerRef := metav1.OwnerReference{
+		APIVersion: vmav1alpha1.GroupVersion.String(),
+		Kind:       "Migration",
+		Name:       mctx.Migration.Name,
+		UID:        mctx.Migration.UID,
+	}
+
+	// Credential secret name
+	credSecretName := fmt.Sprintf("vma-%s-creds",
+		shortID(migName))
+	if err := mctx.TransferMgr.CreateCredentialSecret(
+		ctx, credSecretName, targetNS, ownerRef); err != nil {
+		return PhaseResult{Error: fmt.Errorf(
+			"ImportDisks: credential secret: %w", err)}
+	}
+
+	// CA ConfigMap (only if custom CA is configured)
+	certConfigMapName := ""
+	if len(mctx.TransferMgr.CACert) > 0 {
+		certConfigMapName = fmt.Sprintf("vma-%s-ca",
+			shortID(migName))
+		if err := mctx.TransferMgr.CreateCAConfigMap(
+			ctx, certConfigMapName, targetNS,
+			ownerRef); err != nil {
+			return PhaseResult{Error: fmt.Errorf(
+				"ImportDisks: CA ConfigMap: %w", err)}
+		}
+	}
+
+	// Create DataVolumes for each disk image
+	if len(vmStatus.DataVolumeNames) < len(vmStatus.ImageUUIDs) {
+		for i, imageUUID := range vmStatus.ImageUUIDs {
+			if i < len(vmStatus.DataVolumeNames) {
+				continue
+			}
+
+			dvName := fmt.Sprintf("vma-%s-%s-disk-%d",
+				migName, shortID(vmStatus.ID), i)
+
+			// Find storage mapping for this disk
+			var storageDest *vmav1alpha1.StorageDestination
+			if i < len(dataDisks) {
+				storageDest = transfer.FindStorageMapping(
+					&dataDisks[i], mctx.StorageMap)
+			}
+
+			storageClass := "default"
+			volumeMode := corev1.PersistentVolumeFilesystem
+			accessMode := corev1.ReadWriteOnce
+			if storageDest != nil {
+				storageClass = storageDest.StorageClass
+				volumeMode = storageDest.VolumeMode
+				accessMode = storageDest.AccessMode
+			}
+
+			diskSize := int64(0)
+			if i < len(dataDisks) {
+				diskSize = dataDisks[i].DiskSizeBytes
+				if diskSize == 0 &&
+					dataDisks[i].BackingInfo != nil {
+					diskSize = dataDisks[i].BackingInfo.DiskSizeBytes
+				}
+			}
+
+			opts := transfer.DataVolumeOptions{
+				Name:          dvName,
+				Namespace:     targetNS,
+				ImageURL:      mctx.TransferMgr.ImageDownloadURL(imageUUID),
+				DiskSizeBytes: diskSize,
+				StorageClass:  storageClass,
+				VolumeMode:    volumeMode,
+				AccessMode:    accessMode,
+				SecretName:    credSecretName,
+				CertConfigMap: certConfigMapName,
+				OwnerRef:      ownerRef,
+			}
+
+			if err := mctx.TransferMgr.CreateDataVolume(
+				ctx, opts); err != nil {
+				return PhaseResult{Error: fmt.Errorf(
+					"ImportDisks: DataVolume %s: %w",
+					dvName, err)}
+			}
+			vmStatus.DataVolumeNames = append(
+				vmStatus.DataVolumeNames, dvName)
+		}
+	}
+
+	// Poll DataVolume status
+	allSucceeded := true
+	for _, dvName := range vmStatus.DataVolumeNames {
+		progress, pollErr := mctx.TransferMgr.GetDataVolumeProgress(
+			ctx, dvName, targetNS)
+		if pollErr != nil {
+			if apierrors.IsNotFound(pollErr) {
+				allSucceeded = false
+				continue
+			}
+			return PhaseResult{Error: fmt.Errorf(
+				"ImportDisks: poll %s: %w",
+				dvName, pollErr)}
+		}
+
+		switch progress.Phase {
+		case cdiv1beta1.Succeeded:
+			continue
+		case cdiv1beta1.Failed:
+			return PhaseResult{Error: fmt.Errorf(
+				"ImportDisks: DataVolume %s failed",
+				dvName)}
+		default:
+			allSucceeded = false
+		}
+	}
+
+	if !allSucceeded {
+		return PhaseResult{Completed: false}
+	}
+
 	return PhaseResult{Completed: true}
 }
 
@@ -448,6 +860,26 @@ func isTerminalMigrationPhase(phase vmav1alpha1.MigrationPhase) bool {
 func isActiveVMPhase(phase vmav1alpha1.VMMigrationPhase) bool {
 	return phase != vmav1alpha1.VMPhasePending &&
 		!isTerminalVMPhase(phase)
+}
+
+// filterDataDisks returns only DISK type entries, skipping CDROMs.
+func filterDataDisks(disks []nutanix.Disk) []nutanix.Disk {
+	result := make([]nutanix.Disk, 0, len(disks))
+	for _, d := range disks {
+		if strings.ToUpper(d.DeviceType) == "CDROM" {
+			continue
+		}
+		result = append(result, d)
+	}
+	return result
+}
+
+// shortID returns the first 8 characters of an ID for naming.
+func shortID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
 }
 
 // SetupWithManager sets up the controller with the Manager.

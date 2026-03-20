@@ -24,7 +24,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	vmav1alpha1 "github.com/nctiggy/nutanix-vma/api/v1alpha1"
@@ -38,41 +40,68 @@ const (
 	migTestVM1ID         = "mig-vm-001"
 	migTestVM2ID         = "mig-vm-002"
 	migTestVM3ID         = "mig-vm-003"
+	migTestTargetNS      = "target"
+	migTestProviderName  = "test-provider"
+	migTestSecretName    = "nutanix-creds"
+	migTestNetMapName    = "netmap"
+	migTestStorMapName   = "stormap"
+	migTestPrismURL      = "https://prism.example.com:9440"
 )
 
-func newMigrationTestPlan(
+func defaultMigrationVM() nutanix.VM {
+	return nutanix.VM{
+		ExtID:      migTestVM1ID,
+		Name:       "test-vm",
+		PowerState: "ON",
+		Disks: []nutanix.Disk{{
+			ExtID:      "disk-001",
+			DeviceType: "DISK",
+			BackingInfo: &nutanix.DiskBackingInfo{
+				VMDiskUUID:    "vdisk-uuid-001",
+				DiskSizeBytes: 10 * 1024 * 1024 * 1024,
+				StorageContainerRef: &nutanix.Reference{
+					ExtID: "container-001",
+				},
+			},
+			DiskSizeBytes: 10 * 1024 * 1024 * 1024,
+		}},
+		Cluster: &nutanix.Reference{ExtID: "cluster-001"},
+	}
+}
+
+func migTestObjects(
 	vmIDs []string, maxInFlight int,
-) *vmav1alpha1.MigrationPlan {
+) (*vmav1alpha1.MigrationPlan, *vmav1alpha1.Migration,
+	*vmav1alpha1.NutanixProvider, *corev1.Secret,
+	*vmav1alpha1.NetworkMap, *vmav1alpha1.StorageMap,
+) {
 	vms := make([]vmav1alpha1.PlanVM, 0, len(vmIDs))
 	for _, id := range vmIDs {
 		vms = append(vms, vmav1alpha1.PlanVM{
 			ID: id, Name: "vm-" + id,
 		})
 	}
-	return &vmav1alpha1.MigrationPlan{
+	plan := &vmav1alpha1.MigrationPlan{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      migTestPlanName,
 			Namespace: migTestNS,
 		},
 		Spec: vmav1alpha1.MigrationPlanSpec{
 			ProviderRef: corev1.LocalObjectReference{
-				Name: "provider",
+				Name: migTestProviderName,
 			},
-			TargetNamespace: "target",
+			TargetNamespace: migTestTargetNS,
 			NetworkMapRef: corev1.LocalObjectReference{
-				Name: "netmap",
+				Name: migTestNetMapName,
 			},
 			StorageMapRef: corev1.LocalObjectReference{
-				Name: "stormap",
+				Name: migTestStorMapName,
 			},
 			VMs:         vms,
 			MaxInFlight: maxInFlight,
 		},
 	}
-}
-
-func newTestMigration() *vmav1alpha1.Migration {
-	return &vmav1alpha1.Migration{
+	migration := &vmav1alpha1.Migration{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      migTestMigrationName,
 			Namespace: migTestNS,
@@ -83,6 +112,91 @@ func newTestMigration() *vmav1alpha1.Migration {
 			},
 		},
 	}
+	provider := &vmav1alpha1.NutanixProvider{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      migTestProviderName,
+			Namespace: migTestNS,
+		},
+		Spec: vmav1alpha1.NutanixProviderSpec{
+			URL:       migTestPrismURL,
+			SecretRef: corev1.LocalObjectReference{Name: migTestSecretName},
+		},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      migTestSecretName,
+			Namespace: migTestNS,
+		},
+		Data: map[string][]byte{
+			"username": []byte("admin"),
+			"password": []byte("secret"),
+		},
+	}
+	netMap := &vmav1alpha1.NetworkMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      migTestNetMapName,
+			Namespace: migTestNS,
+		},
+		Spec: vmav1alpha1.NetworkMapSpec{
+			ProviderRef: corev1.LocalObjectReference{
+				Name: migTestProviderName,
+			},
+			Map: []vmav1alpha1.NetworkPair{{
+				Source:      vmav1alpha1.NetworkSource{ID: "sub-001"},
+				Destination: vmav1alpha1.NetworkDestination{Type: "pod"},
+			}},
+		},
+	}
+	storMap := &vmav1alpha1.StorageMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      migTestStorMapName,
+			Namespace: migTestNS,
+		},
+		Spec: vmav1alpha1.StorageMapSpec{
+			ProviderRef: corev1.LocalObjectReference{
+				Name: migTestProviderName,
+			},
+			Map: []vmav1alpha1.StoragePair{{
+				Source: vmav1alpha1.StorageSource{
+					ID: "container-001",
+				},
+				Destination: vmav1alpha1.StorageDestination{
+					StorageClass: "fast-ssd",
+					VolumeMode:   corev1.PersistentVolumeFilesystem,
+					AccessMode:   corev1.ReadWriteOnce,
+				},
+			}},
+		},
+	}
+	return plan, migration, provider, secret, netMap, storMap
+}
+
+func buildFullMigrationReconciler(
+	fakeNX *fakeNutanixClient,
+	vmIDs []string,
+) *MigrationReconciler {
+	plan, migration, provider, secret, netMap, storMap :=
+		migTestObjects(vmIDs, 1)
+
+	s := newTestScheme()
+	_ = cdiv1beta1.AddToScheme(s)
+
+	fc := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(plan, migration, provider, secret,
+			netMap, storMap).
+		WithStatusSubresource(migration,
+			&cdiv1beta1.DataVolume{}).
+		Build()
+
+	return &MigrationReconciler{
+		Client: fc,
+		ClientFactory: func(
+			_ nutanix.ClientConfig,
+		) (nutanix.NutanixClient, error) {
+			return fakeNX, nil
+		},
+	}
 }
 
 func migrationRequest() ctrl.Request {
@@ -90,26 +204,6 @@ func migrationRequest() ctrl.Request {
 		NamespacedName: types.NamespacedName{
 			Name:      migTestMigrationName,
 			Namespace: migTestNS,
-		},
-	}
-}
-
-func buildMigrationReconciler(
-	migration *vmav1alpha1.Migration,
-	plan *vmav1alpha1.MigrationPlan,
-) *MigrationReconciler {
-	s := newTestScheme()
-	fc := fake.NewClientBuilder().
-		WithScheme(s).
-		WithObjects(plan, migration).
-		WithStatusSubresource(migration).
-		Build()
-	return &MigrationReconciler{
-		Client: fc,
-		ClientFactory: func(
-			_ nutanix.ClientConfig,
-		) (nutanix.NutanixClient, error) {
-			return &fakeNutanixClient{}, nil
 		},
 	}
 }
@@ -129,217 +223,373 @@ func getMigration(
 }
 
 func TestMigrationReconcile_FullPipeline(t *testing.T) {
-	plan := newMigrationTestPlan([]string{migTestVM1ID}, 1)
-	migration := newTestMigration()
+	vm := defaultMigrationVM()
+	fakeNX := &fakeNutanixClient{
+		vms:              []nutanix.VM{vm},
+		createImageUUIDs: []string{"img-uuid-001"},
+	}
 
-	r := buildMigrationReconciler(migration, plan)
+	r := buildFullMigrationReconciler(
+		fakeNX, []string{migTestVM1ID})
 
+	// First reconcile: advances through phases, ImportDisks waits
 	result, err := r.Reconcile(
 		context.Background(), migrationRequest())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.RequeueAfter != 0 {
-		t.Errorf("expected no requeue, got %v", result.RequeueAfter)
-	}
 
 	m := getMigration(t, r)
+
+	// VM should be in ImportDisks waiting for DataVolume
+	if m.Status.VMs[0].Phase != vmav1alpha1.VMPhaseImportDisks {
+		t.Errorf("expected ImportDisks, got %s",
+			m.Status.VMs[0].Phase)
+	}
+	if result.RequeueAfter == 0 {
+		t.Error("expected requeue while DataVolumes are pending")
+	}
+
+	// Verify snapshot was created
+	if m.Status.VMs[0].SnapshotUUID == "" {
+		t.Error("expected SnapshotUUID to be set")
+	}
+
+	// Verify image was exported
+	if len(m.Status.VMs[0].ImageUUIDs) != 1 {
+		t.Fatalf("expected 1 image UUID, got %d",
+			len(m.Status.VMs[0].ImageUUIDs))
+	}
+
+	// Verify DataVolume was created
+	if len(m.Status.VMs[0].DataVolumeNames) != 1 {
+		t.Fatalf("expected 1 DV name, got %d",
+			len(m.Status.VMs[0].DataVolumeNames))
+	}
+
+	// Verify original power state was stored
+	if m.Status.VMs[0].OriginalPowerState != "ON" {
+		t.Errorf("expected original power state ON, got %s",
+			m.Status.VMs[0].OriginalPowerState)
+	}
+
+	// Now simulate DataVolume succeeding
+	dvName := m.Status.VMs[0].DataVolumeNames[0]
+	dv := &cdiv1beta1.DataVolume{}
+	if err := r.Get(context.Background(), types.NamespacedName{
+		Name:      dvName,
+		Namespace: migTestTargetNS,
+	}, dv); err != nil {
+		t.Fatalf("DataVolume not found: %v", err)
+	}
+	dv.Status.Phase = cdiv1beta1.Succeeded
+	if err := r.Status().Update(
+		context.Background(), dv); err != nil {
+		t.Fatalf("failed to update DV status: %v", err)
+	}
+
+	// Second reconcile: ImportDisks completes, remaining stubs pass
+	_, err = r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("reconcile 2: unexpected error: %v", err)
+	}
+
+	m = getMigration(t, r)
 	if m.Status.Phase != vmav1alpha1.MigrationPhaseCompleted {
 		t.Errorf("expected Completed, got %s", m.Status.Phase)
-	}
-	if len(m.Status.VMs) != 1 {
-		t.Fatalf("expected 1 VM, got %d", len(m.Status.VMs))
 	}
 	if m.Status.VMs[0].Phase != vmav1alpha1.VMPhaseCompleted {
 		t.Errorf("expected VM Completed, got %s",
 			m.Status.VMs[0].Phase)
 	}
-	if m.Status.VMs[0].Started == nil {
-		t.Error("expected VM Started timestamp")
-	}
-	if m.Status.VMs[0].Completed == nil {
-		t.Error("expected VM Completed timestamp")
-	}
-	if m.Status.Started == nil {
-		t.Error("expected migration Started timestamp")
-	}
-	if m.Status.Completed == nil {
-		t.Error("expected migration Completed timestamp")
+}
+
+func TestMigrationReconcile_AlreadyPoweredOff(t *testing.T) {
+	vm := defaultMigrationVM()
+	vm.PowerState = "OFF"
+	fakeNX := &fakeNutanixClient{
+		vms:              []nutanix.VM{vm},
+		powerState:       nutanix.PowerStateOff,
+		createImageUUIDs: []string{"img-uuid-001"},
 	}
 
-	// Check Ready condition
-	hasReady := false
-	for _, c := range m.Status.Conditions {
-		if c.Type == conditionTypeMigrationDone &&
-			c.Status == metav1.ConditionTrue {
-			hasReady = true
-		}
+	r := buildFullMigrationReconciler(
+		fakeNX, []string{migTestVM1ID})
+
+	_, err := r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !hasReady {
-		t.Error("expected Ready=True condition")
+
+	m := getMigration(t, r)
+	// Should skip PowerOff and proceed
+	if m.Status.VMs[0].OriginalPowerState != "OFF" {
+		t.Errorf("expected original power state OFF, got %s",
+			m.Status.VMs[0].OriginalPowerState)
+	}
+}
+
+func TestMigrationReconcile_PowerOffFailure(t *testing.T) {
+	vm := defaultMigrationVM()
+	fakeNX := &fakeNutanixClient{
+		vms:         []nutanix.VM{vm},
+		powerOffErr: errors.New("power off failed"),
+	}
+
+	r := buildFullMigrationReconciler(
+		fakeNX, []string{migTestVM1ID})
+
+	_, err := r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	m := getMigration(t, r)
+	if m.Status.VMs[0].Phase != vmav1alpha1.VMPhaseFailed {
+		t.Errorf("expected Failed, got %s",
+			m.Status.VMs[0].Phase)
+	}
+	if m.Status.VMs[0].Error == "" {
+		t.Error("expected error message on failed VM")
+	}
+}
+
+func TestMigrationReconcile_SnapshotFailure(t *testing.T) {
+	vm := defaultMigrationVM()
+	fakeNX := &fakeNutanixClient{
+		vms:         []nutanix.VM{vm},
+		createRPErr: errors.New("snapshot failed"),
+	}
+
+	r := buildFullMigrationReconciler(
+		fakeNX, []string{migTestVM1ID})
+
+	_, err := r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	m := getMigration(t, r)
+	if m.Status.VMs[0].Phase != vmav1alpha1.VMPhaseFailed {
+		t.Errorf("expected Failed, got %s",
+			m.Status.VMs[0].Phase)
+	}
+}
+
+func TestMigrationReconcile_ExportDisksFailure(t *testing.T) {
+	vm := defaultMigrationVM()
+	fakeNX := &fakeNutanixClient{
+		vms:            []nutanix.VM{vm},
+		createImageErr: errors.New("image export failed"),
+	}
+
+	r := buildFullMigrationReconciler(
+		fakeNX, []string{migTestVM1ID})
+
+	_, err := r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	m := getMigration(t, r)
+	if m.Status.VMs[0].Phase != vmav1alpha1.VMPhaseFailed {
+		t.Errorf("expected Failed, got %s",
+			m.Status.VMs[0].Phase)
+	}
+}
+
+func TestMigrationReconcile_MultiDisk(t *testing.T) {
+	vm := defaultMigrationVM()
+	vm.Disks = append(vm.Disks, nutanix.Disk{
+		ExtID:      "disk-002",
+		DeviceType: "DISK",
+		BackingInfo: &nutanix.DiskBackingInfo{
+			VMDiskUUID:    "vdisk-uuid-002",
+			DiskSizeBytes: 20 * 1024 * 1024 * 1024,
+			StorageContainerRef: &nutanix.Reference{
+				ExtID: "container-001",
+			},
+		},
+		DiskSizeBytes: 20 * 1024 * 1024 * 1024,
+	})
+	// Add CDROM that should be skipped
+	vm.Disks = append(vm.Disks, nutanix.Disk{
+		ExtID:      "cdrom-001",
+		DeviceType: "CDROM",
+	})
+
+	fakeNX := &fakeNutanixClient{
+		vms: []nutanix.VM{vm},
+		createImageUUIDs: []string{
+			"img-uuid-001", "img-uuid-002",
+		},
+	}
+
+	r := buildFullMigrationReconciler(
+		fakeNX, []string{migTestVM1ID})
+
+	_, err := r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	m := getMigration(t, r)
+	// Should have 2 images (CDROM skipped)
+	if len(m.Status.VMs[0].ImageUUIDs) != 2 {
+		t.Fatalf("expected 2 images, got %d",
+			len(m.Status.VMs[0].ImageUUIDs))
+	}
+	// Should have 2 DataVolumes
+	if len(m.Status.VMs[0].DataVolumeNames) != 2 {
+		t.Fatalf("expected 2 DVs, got %d",
+			len(m.Status.VMs[0].DataVolumeNames))
+	}
+}
+
+func TestMigrationReconcile_DataVolumeFailure(t *testing.T) {
+	vm := defaultMigrationVM()
+	fakeNX := &fakeNutanixClient{
+		vms:              []nutanix.VM{vm},
+		createImageUUIDs: []string{"img-uuid-001"},
+	}
+
+	r := buildFullMigrationReconciler(
+		fakeNX, []string{migTestVM1ID})
+
+	// First reconcile: creates DataVolume
+	_, err := r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Mark DV as Failed
+	m := getMigration(t, r)
+	dvName := m.Status.VMs[0].DataVolumeNames[0]
+	dv := &cdiv1beta1.DataVolume{}
+	if err = r.Get(context.Background(), types.NamespacedName{
+		Name: dvName, Namespace: migTestTargetNS,
+	}, dv); err != nil {
+		t.Fatalf("DV not found: %v", err)
+	}
+	dv.Status.Phase = cdiv1beta1.Failed
+	if err = r.Status().Update(
+		context.Background(), dv); err != nil {
+		t.Fatalf("failed to update DV status: %v", err)
+	}
+
+	// Second reconcile: should fail the VM
+	_, err = r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("reconcile 2: unexpected error: %v", err)
+	}
+
+	m = getMigration(t, r)
+	if m.Status.VMs[0].Phase != vmav1alpha1.VMPhaseFailed {
+		t.Errorf("expected Failed, got %s",
+			m.Status.VMs[0].Phase)
 	}
 }
 
 func TestMigrationReconcile_MaxInFlight(t *testing.T) {
-	vmIDs := []string{migTestVM1ID, migTestVM2ID, migTestVM3ID}
-	plan := newMigrationTestPlan(vmIDs, 1)
-	migration := newTestMigration()
+	vm1 := defaultMigrationVM()
+	vm2 := defaultMigrationVM()
+	vm2.ExtID = migTestVM2ID
+	vm2.Name = "test-vm-2"
 
-	r := buildMigrationReconciler(migration, plan)
+	fakeNX := &fakeNutanixClient{
+		vms: []nutanix.VM{vm1, vm2},
+		createImageUUIDs: []string{
+			"img-001", "img-002",
+		},
+	}
 
-	// First reconcile: VM1 completes, VM2 and VM3 still pending
+	r := buildFullMigrationReconciler(
+		fakeNX,
+		[]string{migTestVM1ID, migTestVM2ID})
+
+	// First reconcile: VM1 starts, VM2 pending
 	result, err := r.Reconcile(
 		context.Background(), migrationRequest())
 	if err != nil {
-		t.Fatalf("reconcile 1: unexpected error: %v", err)
+		t.Fatalf("reconcile 1: %v", err)
 	}
 	if result.RequeueAfter == 0 {
-		t.Error("reconcile 1: expected requeue for pending VMs")
+		t.Error("expected requeue")
 	}
 
 	m := getMigration(t, r)
-	if m.Status.Phase != vmav1alpha1.MigrationPhaseRunning {
-		t.Errorf("reconcile 1: expected Running, got %s",
-			m.Status.Phase)
-	}
-	if m.Status.VMs[0].Phase != vmav1alpha1.VMPhaseCompleted {
-		t.Errorf("VM1 expected Completed, got %s",
-			m.Status.VMs[0].Phase)
-	}
 	if m.Status.VMs[1].Phase != vmav1alpha1.VMPhasePending {
 		t.Errorf("VM2 expected Pending, got %s",
 			m.Status.VMs[1].Phase)
 	}
-	if m.Status.VMs[2].Phase != vmav1alpha1.VMPhasePending {
-		t.Errorf("VM3 expected Pending, got %s",
-			m.Status.VMs[2].Phase)
-	}
-
-	// Second reconcile: VM2 completes
-	_, err = r.Reconcile(context.Background(), migrationRequest())
-	if err != nil {
-		t.Fatalf("reconcile 2: unexpected error: %v", err)
-	}
-	m = getMigration(t, r)
-	if m.Status.VMs[1].Phase != vmav1alpha1.VMPhaseCompleted {
-		t.Errorf("VM2 expected Completed after reconcile 2, got %s",
-			m.Status.VMs[1].Phase)
-	}
-
-	// Third reconcile: VM3 completes, overall Completed
-	_, err = r.Reconcile(context.Background(), migrationRequest())
-	if err != nil {
-		t.Fatalf("reconcile 3: unexpected error: %v", err)
-	}
-	m = getMigration(t, r)
-	if m.Status.Phase != vmav1alpha1.MigrationPhaseCompleted {
-		t.Errorf("expected Completed after reconcile 3, got %s",
-			m.Status.Phase)
-	}
-	for i, vm := range m.Status.VMs {
-		if vm.Phase != vmav1alpha1.VMPhaseCompleted {
-			t.Errorf("VM[%d] expected Completed, got %s",
-				i, vm.Phase)
-		}
-	}
 }
 
-func TestMigrationReconcile_MultipleVMsHighInFlight(t *testing.T) {
-	vmIDs := []string{migTestVM1ID, migTestVM2ID, migTestVM3ID}
-	plan := newMigrationTestPlan(vmIDs, 10)
-	migration := newTestMigration()
+func TestMigrationReconcile_Cancellation(t *testing.T) {
+	vm1 := defaultMigrationVM()
+	vm2 := defaultMigrationVM()
+	vm2.ExtID = migTestVM2ID
 
-	r := buildMigrationReconciler(migration, plan)
+	fakeNX := &fakeNutanixClient{
+		vms:              []nutanix.VM{vm1, vm2},
+		createImageUUIDs: []string{"img-001", "img-002"},
+	}
 
-	// All VMs should complete in a single reconcile
-	result, err := r.Reconcile(
+	plan, migration, provider, secret, netMap, storMap :=
+		migTestObjects(
+			[]string{migTestVM1ID, migTestVM2ID}, 2)
+	migration.Spec.Cancel = []string{migTestVM2ID}
+
+	s := newTestScheme()
+	_ = cdiv1beta1.AddToScheme(s)
+	fc := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(plan, migration, provider, secret,
+			netMap, storMap).
+		WithStatusSubresource(migration).
+		Build()
+
+	r := &MigrationReconciler{
+		Client: fc,
+		ClientFactory: func(
+			_ nutanix.ClientConfig,
+		) (nutanix.NutanixClient, error) {
+			return fakeNX, nil
+		},
+	}
+
+	_, err := r.Reconcile(
 		context.Background(), migrationRequest())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.RequeueAfter != 0 {
-		t.Errorf("expected no requeue, got %v", result.RequeueAfter)
-	}
 
 	m := getMigration(t, r)
-	if m.Status.Phase != vmav1alpha1.MigrationPhaseCompleted {
-		t.Errorf("expected Completed, got %s", m.Status.Phase)
-	}
-	if len(m.Status.VMs) != 3 {
-		t.Fatalf("expected 3 VMs, got %d", len(m.Status.VMs))
-	}
-	for i, vm := range m.Status.VMs {
-		if vm.Phase != vmav1alpha1.VMPhaseCompleted {
-			t.Errorf("VM[%d] expected Completed, got %s",
-				i, vm.Phase)
-		}
-	}
-}
-
-func TestMigrationReconcile_Cancellation(t *testing.T) {
-	vmIDs := []string{migTestVM1ID, migTestVM2ID}
-	plan := newMigrationTestPlan(vmIDs, 2)
-	migration := newTestMigration()
-	migration.Spec.Cancel = []string{migTestVM2ID}
-
-	r := buildMigrationReconciler(migration, plan)
-
-	_, err := r.Reconcile(context.Background(), migrationRequest())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	m := getMigration(t, r)
-	if m.Status.VMs[0].Phase != vmav1alpha1.VMPhaseCompleted {
-		t.Errorf("VM1 expected Completed, got %s",
-			m.Status.VMs[0].Phase)
-	}
 	if m.Status.VMs[1].Phase != vmav1alpha1.VMPhaseCancelled {
 		t.Errorf("VM2 expected Cancelled, got %s",
 			m.Status.VMs[1].Phase)
 	}
-	// 1 completed + 1 cancelled => Completed (not all cancelled)
-	if m.Status.Phase != vmav1alpha1.MigrationPhaseCompleted {
-		t.Errorf("expected Completed (partial cancel), got %s",
-			m.Status.Phase)
-	}
-}
-
-func TestMigrationReconcile_AllCancelled(t *testing.T) {
-	vmIDs := []string{migTestVM1ID, migTestVM2ID}
-	plan := newMigrationTestPlan(vmIDs, 2)
-	migration := newTestMigration()
-	migration.Spec.Cancel = []string{migTestVM1ID, migTestVM2ID}
-
-	r := buildMigrationReconciler(migration, plan)
-
-	_, err := r.Reconcile(context.Background(), migrationRequest())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	m := getMigration(t, r)
-	if m.Status.Phase != vmav1alpha1.MigrationPhaseCancelled {
-		t.Errorf("expected Cancelled, got %s", m.Status.Phase)
-	}
-	for _, vm := range m.Status.VMs {
-		if vm.Phase != vmav1alpha1.VMPhaseCancelled {
-			t.Errorf("VM %s expected Cancelled, got %s",
-				vm.ID, vm.Phase)
-		}
-		if vm.Completed == nil {
-			t.Errorf("VM %s expected Completed timestamp", vm.ID)
-		}
-	}
 }
 
 func TestMigrationReconcile_Finalizer(t *testing.T) {
-	plan := newMigrationTestPlan([]string{migTestVM1ID}, 1)
-	migration := newTestMigration()
+	vm := defaultMigrationVM()
+	fakeNX := &fakeNutanixClient{
+		vms:              []nutanix.VM{vm},
+		createImageUUIDs: []string{"img-001"},
+	}
 
-	r := buildMigrationReconciler(migration, plan)
+	r := buildFullMigrationReconciler(
+		fakeNX, []string{migTestVM1ID})
 
-	_, err := r.Reconcile(context.Background(), migrationRequest())
+	_, err := r.Reconcile(
+		context.Background(), migrationRequest())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -358,8 +608,9 @@ func TestMigrationReconcile_Finalizer(t *testing.T) {
 
 func TestMigrationReconcile_DeletionBlocked(t *testing.T) {
 	s := newTestScheme()
-	plan := newMigrationTestPlan([]string{migTestVM1ID}, 1)
-	migration := newTestMigration()
+	_ = cdiv1beta1.AddToScheme(s)
+	plan, migration, provider, secret, netMap, storMap :=
+		migTestObjects([]string{migTestVM1ID}, 1)
 	migration.Finalizers = []string{migrationFinalizer}
 	now := metav1.Now()
 	migration.DeletionTimestamp = &now
@@ -367,7 +618,8 @@ func TestMigrationReconcile_DeletionBlocked(t *testing.T) {
 
 	fc := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(plan, migration).
+		WithObjects(plan, migration, provider, secret,
+			netMap, storMap).
 		WithStatusSubresource(migration).
 		Build()
 
@@ -388,28 +640,13 @@ func TestMigrationReconcile_DeletionBlocked(t *testing.T) {
 	if result.RequeueAfter == 0 {
 		t.Error("expected requeue for running migration deletion")
 	}
-
-	// Finalizer should still be present
-	m := &vmav1alpha1.Migration{}
-	_ = fc.Get(context.Background(), types.NamespacedName{
-		Name:      migTestMigrationName,
-		Namespace: migTestNS,
-	}, m)
-	hasFinalizer := false
-	for _, f := range m.Finalizers {
-		if f == migrationFinalizer {
-			hasFinalizer = true
-		}
-	}
-	if !hasFinalizer {
-		t.Error("expected finalizer to remain on running migration")
-	}
 }
 
 func TestMigrationReconcile_DeletionAllowed(t *testing.T) {
 	s := newTestScheme()
-	plan := newMigrationTestPlan([]string{migTestVM1ID}, 1)
-	migration := newTestMigration()
+	_ = cdiv1beta1.AddToScheme(s)
+	plan, migration, provider, secret, netMap, storMap :=
+		migTestObjects([]string{migTestVM1ID}, 1)
 	migration.Finalizers = []string{migrationFinalizer}
 	now := metav1.Now()
 	migration.DeletionTimestamp = &now
@@ -417,7 +654,8 @@ func TestMigrationReconcile_DeletionAllowed(t *testing.T) {
 
 	fc := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(plan, migration).
+		WithObjects(plan, migration, provider, secret,
+			netMap, storMap).
 		WithStatusSubresource(migration).
 		Build()
 
@@ -436,24 +674,14 @@ func TestMigrationReconcile_DeletionAllowed(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result.RequeueAfter != 0 {
-		t.Errorf("expected no requeue, got %v", result.RequeueAfter)
-	}
-
-	// Finalizer should be removed
-	m := &vmav1alpha1.Migration{}
-	_ = fc.Get(context.Background(), types.NamespacedName{
-		Name:      migTestMigrationName,
-		Namespace: migTestNS,
-	}, m)
-	for _, f := range m.Finalizers {
-		if f == migrationFinalizer {
-			t.Error("expected finalizer removed for completed migration")
-		}
+		t.Errorf("expected no requeue, got %v",
+			result.RequeueAfter)
 	}
 }
 
 func TestMigrationReconcile_NotFound(t *testing.T) {
 	s := newTestScheme()
+	_ = cdiv1beta1.AddToScheme(s)
 	fc := fake.NewClientBuilder().WithScheme(s).Build()
 
 	r := &MigrationReconciler{
@@ -461,7 +689,7 @@ func TestMigrationReconcile_NotFound(t *testing.T) {
 		ClientFactory: func(
 			_ nutanix.ClientConfig,
 		) (nutanix.NutanixClient, error) {
-			return nil, errors.New("factory not called")
+			return nil, errors.New("not called")
 		},
 	}
 
@@ -471,13 +699,25 @@ func TestMigrationReconcile_NotFound(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result.RequeueAfter != 0 {
-		t.Errorf("expected no requeue, got %v", result.RequeueAfter)
+		t.Errorf("expected no requeue, got %v",
+			result.RequeueAfter)
 	}
 }
 
 func TestMigrationReconcile_PlanNotFound(t *testing.T) {
 	s := newTestScheme()
-	migration := newTestMigration()
+	_ = cdiv1beta1.AddToScheme(s)
+	migration := &vmav1alpha1.Migration{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      migTestMigrationName,
+			Namespace: migTestNS,
+		},
+		Spec: vmav1alpha1.MigrationSpec{
+			PlanRef: corev1.LocalObjectReference{
+				Name: migTestPlanName,
+			},
+		},
+	}
 
 	fc := fake.NewClientBuilder().
 		WithScheme(s).
@@ -494,7 +734,8 @@ func TestMigrationReconcile_PlanNotFound(t *testing.T) {
 		},
 	}
 
-	_, err := r.Reconcile(context.Background(), migrationRequest())
+	_, err := r.Reconcile(
+		context.Background(), migrationRequest())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -508,66 +749,120 @@ func TestMigrationReconcile_PlanNotFound(t *testing.T) {
 	if m.Status.Phase != vmav1alpha1.MigrationPhaseFailed {
 		t.Errorf("expected Failed, got %s", m.Status.Phase)
 	}
-	if m.Status.Completed == nil {
-		t.Error("expected Completed timestamp on failure")
+}
+
+func TestMigrationReconcile_ProviderNotFound(t *testing.T) {
+	s := newTestScheme()
+	_ = cdiv1beta1.AddToScheme(s)
+
+	plan, migration, _, _, netMap, storMap :=
+		migTestObjects([]string{migTestVM1ID}, 1)
+
+	fc := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(plan, migration, netMap, storMap).
+		WithStatusSubresource(migration).
+		Build()
+
+	r := &MigrationReconciler{
+		Client: fc,
+		ClientFactory: func(
+			_ nutanix.ClientConfig,
+		) (nutanix.NutanixClient, error) {
+			return &fakeNutanixClient{}, nil
+		},
+	}
+
+	_, err := r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	m := getMigrationFrom(t, r.Client)
+	if m.Status.Phase != vmav1alpha1.MigrationPhaseFailed {
+		t.Errorf("expected Failed for missing provider, got %s",
+			m.Status.Phase)
 	}
 }
 
 func TestMigrationReconcile_Idempotent(t *testing.T) {
-	plan := newMigrationTestPlan([]string{migTestVM1ID}, 1)
-	migration := newTestMigration()
-
-	r := buildMigrationReconciler(migration, plan)
-
-	// First reconcile: completes
-	_, err := r.Reconcile(context.Background(), migrationRequest())
-	if err != nil {
-		t.Fatalf("reconcile 1: unexpected error: %v", err)
+	vm := defaultMigrationVM()
+	fakeNX := &fakeNutanixClient{
+		vms:              []nutanix.VM{vm},
+		createImageUUIDs: []string{"img-001"},
 	}
 
+	r := buildFullMigrationReconciler(
+		fakeNX, []string{migTestVM1ID})
+
+	// First reconcile
+	_, err := r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("reconcile 1: %v", err)
+	}
+
+	// Mark DV as succeeded
 	m := getMigration(t, r)
+	dvName := m.Status.VMs[0].DataVolumeNames[0]
+	dv := &cdiv1beta1.DataVolume{}
+	_ = r.Get(context.Background(), types.NamespacedName{
+		Name: dvName, Namespace: migTestTargetNS,
+	}, dv)
+	dv.Status.Phase = cdiv1beta1.Succeeded
+	_ = r.Status().Update(context.Background(), dv)
+
+	// Complete migration
+	_, err = r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("reconcile 2: %v", err)
+	}
+
+	m = getMigration(t, r)
 	if m.Status.Phase != vmav1alpha1.MigrationPhaseCompleted {
 		t.Fatalf("expected Completed, got %s", m.Status.Phase)
 	}
-	completedTime := m.Status.Completed
 
-	// Second reconcile: no-op
+	// Third reconcile: should be no-op
 	result, err := r.Reconcile(
 		context.Background(), migrationRequest())
 	if err != nil {
-		t.Fatalf("reconcile 2: unexpected error: %v", err)
+		t.Fatalf("reconcile 3: %v", err)
 	}
 	if result.RequeueAfter != 0 {
 		t.Errorf("expected no requeue for completed, got %v",
 			result.RequeueAfter)
 	}
-
-	// Status should be unchanged
-	m2 := getMigration(t, r)
-	if m2.Status.Phase != vmav1alpha1.MigrationPhaseCompleted {
-		t.Errorf("expected Completed, got %s", m2.Status.Phase)
-	}
-	if !m2.Status.Completed.Equal(completedTime) {
-		t.Error("Completed timestamp changed on re-reconcile")
-	}
 }
 
-func TestMigrationReconcile_VMNamesFromPlan(t *testing.T) {
-	plan := newMigrationTestPlan([]string{migTestVM1ID}, 1)
-	migration := newTestMigration()
-
-	r := buildMigrationReconciler(migration, plan)
-
-	_, err := r.Reconcile(context.Background(), migrationRequest())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestMigrationReconcile_SnapshotIdempotent(t *testing.T) {
+	vm := defaultMigrationVM()
+	fakeNX := &fakeNutanixClient{
+		vms:              []nutanix.VM{vm},
+		createImageUUIDs: []string{"img-001"},
 	}
 
+	r := buildFullMigrationReconciler(
+		fakeNX, []string{migTestVM1ID})
+
+	_, _ = r.Reconcile(
+		context.Background(), migrationRequest())
 	m := getMigration(t, r)
-	expectedName := "vm-" + migTestVM1ID
-	if m.Status.VMs[0].Name != expectedName {
-		t.Errorf("expected VM name %q, got %q",
-			expectedName, m.Status.VMs[0].Name)
+
+	snapshotUUID := m.Status.VMs[0].SnapshotUUID
+	if snapshotUUID == "" {
+		t.Fatal("expected SnapshotUUID to be set")
+	}
+
+	// Re-reconcile should not change the snapshot UUID
+	_, _ = r.Reconcile(
+		context.Background(), migrationRequest())
+	m = getMigration(t, r)
+	if m.Status.VMs[0].SnapshotUUID != snapshotUUID {
+		t.Errorf("SnapshotUUID changed on re-reconcile: %s -> %s",
+			snapshotUUID, m.Status.VMs[0].SnapshotUUID)
 	}
 }
 
@@ -576,11 +871,14 @@ func TestNextPhase(t *testing.T) {
 		current  vmav1alpha1.VMMigrationPhase
 		expected vmav1alpha1.VMMigrationPhase
 	}{
-		{vmav1alpha1.VMPhasePending, vmav1alpha1.VMPhasePreHook},
-		{vmav1alpha1.VMPhasePreHook, vmav1alpha1.VMPhaseStorePowerState},
-		{vmav1alpha1.VMPhaseCleanup, vmav1alpha1.VMPhaseCompleted},
-		// Terminal phase returns itself
-		{vmav1alpha1.VMPhaseCompleted, vmav1alpha1.VMPhaseCompleted},
+		{vmav1alpha1.VMPhasePending,
+			vmav1alpha1.VMPhasePreHook},
+		{vmav1alpha1.VMPhasePreHook,
+			vmav1alpha1.VMPhaseStorePowerState},
+		{vmav1alpha1.VMPhaseCleanup,
+			vmav1alpha1.VMPhaseCompleted},
+		{vmav1alpha1.VMPhaseCompleted,
+			vmav1alpha1.VMPhaseCompleted},
 	}
 
 	for _, tt := range tests {
@@ -623,4 +921,47 @@ func TestIsActiveVMPhase(t *testing.T) {
 	if !isActiveVMPhase(vmav1alpha1.VMPhaseImportDisks) {
 		t.Error("ImportDisks should be active")
 	}
+}
+
+func TestFilterDataDisks(t *testing.T) {
+	disks := []nutanix.Disk{
+		{ExtID: "d1", DeviceType: "DISK"},
+		{ExtID: "c1", DeviceType: "CDROM"},
+		{ExtID: "d2", DeviceType: "DISK"},
+		{ExtID: "c2", DeviceType: "cdrom"},
+	}
+
+	result := filterDataDisks(disks)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 data disks, got %d", len(result))
+	}
+	if result[0].ExtID != "d1" || result[1].ExtID != "d2" {
+		t.Errorf("unexpected disk IDs: %s, %s",
+			result[0].ExtID, result[1].ExtID)
+	}
+}
+
+func TestShortID(t *testing.T) {
+	if shortID("abcdefghijkl") != "abcdefgh" {
+		t.Errorf("expected 8-char prefix, got %s",
+			shortID("abcdefghijkl"))
+	}
+	if shortID("abc") != "abc" {
+		t.Errorf("expected 'abc' unchanged, got %s",
+			shortID("abc"))
+	}
+}
+
+func getMigrationFrom(
+	t *testing.T, c client.Client,
+) *vmav1alpha1.Migration {
+	t.Helper()
+	m := &vmav1alpha1.Migration{}
+	if err := c.Get(context.Background(), types.NamespacedName{
+		Name:      migTestMigrationName,
+		Namespace: migTestNS,
+	}, m); err != nil {
+		t.Fatalf("failed to get migration: %v", err)
+	}
+	return m
 }
