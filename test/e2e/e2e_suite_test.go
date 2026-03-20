@@ -20,82 +20,150 @@ limitations under the License.
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/nctiggy/nutanix-vma/test/utils"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/clientcmd"
+	kubevirtv1 "kubevirt.io/api/core/v1"
+	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	vmav1alpha1 "github.com/nctiggy/nutanix-vma/api/v1alpha1"
+	"github.com/nctiggy/nutanix-vma/internal/nutanix"
 )
 
 var (
-	// managerImage is the manager image to be built and loaded for testing.
-	managerImage = "example.com/nutanix-vma:v0.0.1"
-	// shouldCleanupCertManager tracks whether CertManager was installed by this suite.
-	shouldCleanupCertManager = false
+	k8sClient  client.Client
+	nxClient   nutanix.NutanixClient
+	ctx        context.Context
+	cancel     context.CancelFunc
+	e2eConfig  E2EConfig
 )
 
-// TestE2E runs the e2e test suite to validate the solution in an isolated environment.
-// The default setup requires Kind and CertManager.
-//
-// To skip CertManager installation, set: CERT_MANAGER_INSTALL_SKIP=true
+// E2EConfig holds environment-sourced test configuration.
+type E2EConfig struct {
+	PrismURL    string
+	Username    string
+	Password    string
+	Kubeconfig  string
+	Insecure    bool
+	TestVMID    string // optional: specific VM UUID to migrate
+	TestVMName  string // optional: VM name pattern to find
+	SubnetID    string // Nutanix subnet UUID for network mapping
+	SubnetName  string // Nutanix subnet name for network mapping
+	StorageID   string // Nutanix storage container UUID
+	StorageName string // Nutanix storage container name
+	StorageClass string // Target Kubernetes StorageClass
+	Namespace   string // Test namespace (default: vma-e2e-test)
+}
+
 func TestE2E(t *testing.T) {
+	if os.Getenv("NUTANIX_E2E") != "true" {
+		t.Skip("Skipping E2E tests: NUTANIX_E2E != true")
+	}
+
 	RegisterFailHandler(Fail)
-	_, _ = fmt.Fprintf(GinkgoWriter, "Starting nutanix-vma e2e test suite\n")
-	RunSpecs(t, "e2e suite")
+	_, _ = fmt.Fprintf(GinkgoWriter,
+		"Starting nutanix-vma E2E test suite\n")
+	RunSpecs(t, "Nutanix VMA E2E Suite")
 }
 
 var _ = BeforeSuite(func() {
-	By("building the manager image")
-	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", managerImage))
-	_, err := utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager image")
+	ctx, cancel = context.WithCancel(context.Background())
 
-	// TODO(user): If you want to change the e2e test vendor from Kind,
-	// ensure the image is built and available, then remove the following block.
-	By("loading the manager image on Kind")
-	err = utils.LoadImageToKindClusterWithName(managerImage)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager image into Kind")
+	By("loading E2E configuration from environment")
+	e2eConfig = loadConfig()
 
-	setupCertManager()
+	By("registering schemes")
+	Expect(vmav1alpha1.AddToScheme(scheme.Scheme)).To(Succeed())
+	Expect(kubevirtv1.AddToScheme(scheme.Scheme)).To(Succeed())
+	Expect(cdiv1beta1.AddToScheme(scheme.Scheme)).To(Succeed())
+
+	By("creating Kubernetes client")
+	kubeconfig := e2eConfig.Kubeconfig
+	if kubeconfig == "" {
+		kubeconfig = clientcmd.RecommendedHomeFile
+	}
+	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	Expect(err).NotTo(HaveOccurred(), "Failed to load kubeconfig")
+
+	k8sClient, err = client.New(cfg, client.Options{
+		Scheme: scheme.Scheme,
+	})
+	Expect(err).NotTo(HaveOccurred())
+
+	By("creating Nutanix API client")
+	nxClient, err = nutanix.NewClient(nutanix.ClientConfig{
+		Host:               e2eConfig.PrismURL,
+		Username:           e2eConfig.Username,
+		Password:           e2eConfig.Password,
+		InsecureSkipVerify: e2eConfig.Insecure,
+		Timeout:            60 * time.Second,
+		MaxRetries:         3,
+	})
+	Expect(err).NotTo(HaveOccurred())
+
+	By("ensuring test namespace exists")
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: e2eConfig.Namespace,
+		},
+	}
+	err = k8sClient.Create(ctx, ns)
+	if err != nil && !isAlreadyExists(err) {
+		Expect(err).NotTo(HaveOccurred(),
+			"Failed to create test namespace")
+	}
 })
 
 var _ = AfterSuite(func() {
-	teardownCertManager()
+	if cancel != nil {
+		cancel()
+	}
 })
 
-// setupCertManager installs CertManager if needed for webhook tests.
-// Skips installation if CERT_MANAGER_INSTALL_SKIP=true or if already present.
-func setupCertManager() {
-	if os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true" {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping CertManager installation (CERT_MANAGER_INSTALL_SKIP=true)\n")
-		return
+func loadConfig() E2EConfig {
+	cfg := E2EConfig{
+		PrismURL:     requireEnv("NUTANIX_PC_URL"),
+		Username:     requireEnv("NUTANIX_USERNAME"),
+		Password:     requireEnv("NUTANIX_PASSWORD"),
+		Kubeconfig:   os.Getenv("KUBEVIRT_KUBECONFIG"),
+		Insecure:     os.Getenv("NUTANIX_INSECURE") == "true",
+		TestVMID:     os.Getenv("NUTANIX_TEST_VM_ID"),
+		TestVMName:   os.Getenv("NUTANIX_TEST_VM_NAME"),
+		SubnetID:     os.Getenv("NUTANIX_SUBNET_ID"),
+		SubnetName:   os.Getenv("NUTANIX_SUBNET_NAME"),
+		StorageID:    os.Getenv("NUTANIX_STORAGE_ID"),
+		StorageName:  os.Getenv("NUTANIX_STORAGE_NAME"),
+		StorageClass: os.Getenv("NUTANIX_STORAGE_CLASS"),
+		Namespace:    os.Getenv("NUTANIX_E2E_NAMESPACE"),
 	}
-
-	By("checking if CertManager is already installed")
-	if utils.IsCertManagerCRDsInstalled() {
-		_, _ = fmt.Fprintf(GinkgoWriter, "CertManager is already installed. Skipping installation.\n")
-		return
+	if cfg.Namespace == "" {
+		cfg.Namespace = "vma-e2e-test"
 	}
-
-	// Mark for cleanup before installation to handle interruptions and partial installs.
-	shouldCleanupCertManager = true
-
-	By("installing CertManager")
-	Expect(utils.InstallCertManager()).To(Succeed(), "Failed to install CertManager")
+	if cfg.StorageClass == "" {
+		cfg.StorageClass = "local-path"
+	}
+	return cfg
 }
 
-// teardownCertManager uninstalls CertManager if it was installed by setupCertManager.
-// This ensures we only remove what we installed.
-func teardownCertManager() {
-	if !shouldCleanupCertManager {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping CertManager cleanup (not installed by this suite)\n")
-		return
-	}
+func requireEnv(key string) string {
+	val := os.Getenv(key)
+	ExpectWithOffset(1, val).NotTo(BeEmpty(),
+		fmt.Sprintf("Required env var %s not set", key))
+	return val
+}
 
-	By("uninstalling CertManager")
-	utils.UninstallCertManager()
+func isAlreadyExists(err error) bool {
+	return err != nil &&
+		client.IgnoreAlreadyExists(err) == nil
 }

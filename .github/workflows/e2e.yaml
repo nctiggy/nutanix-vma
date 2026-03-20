@@ -1,0 +1,53 @@
+name: E2E Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      nutanix_test_vm_id:
+        description: "Nutanix VM UUID to migrate (optional)"
+        required: false
+        type: string
+      nutanix_test_vm_name:
+        description: "Nutanix VM name pattern to search (optional)"
+        required: false
+        type: string
+      run_warm:
+        description: "Run warm migration E2E tests"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  e2e:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: make build
+
+      - name: Run E2E tests
+        env:
+          NUTANIX_E2E: "true"
+          NUTANIX_PC_URL: ${{ secrets.NUTANIX_PC_URL }}
+          NUTANIX_USERNAME: ${{ secrets.NUTANIX_USERNAME }}
+          NUTANIX_PASSWORD: ${{ secrets.NUTANIX_PASSWORD }}
+          NUTANIX_INSECURE: ${{ secrets.NUTANIX_INSECURE }}
+          NUTANIX_SUBNET_ID: ${{ secrets.NUTANIX_SUBNET_ID }}
+          NUTANIX_SUBNET_NAME: ${{ secrets.NUTANIX_SUBNET_NAME }}
+          NUTANIX_STORAGE_ID: ${{ secrets.NUTANIX_STORAGE_ID }}
+          NUTANIX_STORAGE_NAME: ${{ secrets.NUTANIX_STORAGE_NAME }}
+          NUTANIX_STORAGE_CLASS: ${{ secrets.NUTANIX_STORAGE_CLASS }}
+          NUTANIX_TEST_VM_ID: ${{ inputs.nutanix_test_vm_id }}
+          NUTANIX_TEST_VM_NAME: ${{ inputs.nutanix_test_vm_name }}
+          NUTANIX_WARM_E2E: ${{ inputs.run_warm && 'true' || 'false' }}
+          KUBEVIRT_KUBECONFIG: ${{ secrets.KUBEVIRT_KUBECONFIG_PATH }}
+        run: go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 45m
