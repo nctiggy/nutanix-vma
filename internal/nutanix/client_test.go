@@ -391,21 +391,13 @@ func TestStubMethods_ReturnNotImplemented(t *testing.T) {
 
 	// VM methods are implemented in vm.go -- skip them here
 	// Snapshot/image/clone/delete methods are implemented in snapshot.go and image.go -- skip them here
+	// Network/storage/cluster methods are implemented in network.go, storage.go, cluster.go -- skip them here
 
 	_, err = client.DiscoverClusterForCBT(ctx, "uuid")
 	assertNotImplemented(t, err, "DiscoverClusterForCBT")
 
 	_, err = client.GetChangedRegions(ctx, "url", "jwt", "vm", "snap", "base", 0, 0, 0)
 	assertNotImplemented(t, err, "GetChangedRegions")
-
-	_, err = client.ListSubnets(ctx)
-	assertNotImplemented(t, err, "ListSubnets")
-
-	_, err = client.ListStorageContainers(ctx, "url")
-	assertNotImplemented(t, err, "ListStorageContainers")
-
-	_, err = client.ListClusters(ctx)
-	assertNotImplemented(t, err, "ListClusters")
 }
 
 func assertNotImplemented(t *testing.T, err error, methodName string) {

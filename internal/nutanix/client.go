@@ -245,15 +245,3 @@ func (c *httpClient) DiscoverClusterForCBT(_ context.Context, _ string) (*CBTClu
 func (c *httpClient) GetChangedRegions(_ context.Context, _ string, _ string, _ string, _ string, _ string, _ int64, _ int64, _ int64) (*ChangedRegions, error) {
 	return nil, errors.New("not implemented: GetChangedRegions")
 }
-
-func (c *httpClient) ListSubnets(_ context.Context) ([]Subnet, error) {
-	return nil, errors.New("not implemented: ListSubnets")
-}
-
-func (c *httpClient) ListStorageContainers(_ context.Context, _ string) ([]StorageContainer, error) {
-	return nil, errors.New("not implemented: ListStorageContainers")
-}
-
-func (c *httpClient) ListClusters(_ context.Context) ([]Cluster, error) {
-	return nil, errors.New("not implemented: ListClusters")
-}
