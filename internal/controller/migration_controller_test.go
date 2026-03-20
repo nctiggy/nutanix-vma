@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -1552,5 +1553,481 @@ func TestIsCutoverTime(t *testing.T) {
 	m.Spec.Cutover = &future
 	if isCutoverTime(m) {
 		t.Error("future cutover should return false")
+	}
+}
+
+// --- Hook system tests ---
+
+const (
+	hookTestName    = "test-hook"
+	hookTestImage   = "busybox:latest"
+	hookTestPreStep = "PreHook"
+	hookTestPostStp = "PostHook"
+)
+
+func newTestHook(name, image string) *vmav1alpha1.Hook {
+	return &vmav1alpha1.Hook{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: migTestNS,
+		},
+		Spec: vmav1alpha1.HookSpec{
+			Image:          image,
+			Deadline:       "5m",
+			ServiceAccount: hookDefaultSvcAccount,
+		},
+	}
+}
+
+func buildHookMigrationReconciler(
+	fakeNX *fakeNutanixClient,
+	hooks []vmav1alpha1.PlanHookRef,
+) *MigrationReconciler {
+	plan, migration, provider, secret, netMap, storMap :=
+		migTestObjects([]string{migTestVM1ID}, 1)
+
+	// Add hooks to the plan VM
+	plan.Spec.VMs[0].Hooks = hooks
+
+	// Create the Hook CRs
+	hookCR := newTestHook(hookTestName, hookTestImage)
+
+	s := newTestScheme()
+	_ = cdiv1beta1.AddToScheme(s)
+	_ = kubevirtv1.AddToScheme(s)
+
+	fc := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(plan, migration, provider, secret,
+			netMap, storMap, hookCR).
+		WithStatusSubresource(migration,
+			&cdiv1beta1.DataVolume{},
+			&batchv1.Job{}).
+		Build()
+
+	return &MigrationReconciler{
+		Client: fc,
+		ClientFactory: func(
+			_ nutanix.ClientConfig,
+		) (nutanix.NutanixClient, error) {
+			return fakeNX, nil
+		},
+	}
+}
+
+func TestMigrationReconcile_PreHookNoHooks(t *testing.T) {
+	// VM with no hooks should skip PreHook and PostHook
+	vm := defaultMigrationVM()
+	fakeNX := &fakeNutanixClient{
+		vms:              []nutanix.VM{vm},
+		createImageUUIDs: []string{"img-uuid-001"},
+	}
+
+	r := buildFullMigrationReconciler(
+		fakeNX, []string{migTestVM1ID})
+
+	// First reconcile: should pass through PreHook (no hooks)
+	_, err := r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	m := getMigration(t, r)
+	// Should have advanced past PreHook to ImportDisks
+	if m.Status.VMs[0].Phase == vmav1alpha1.VMPhasePreHook {
+		t.Error("expected to advance past PreHook " +
+			"when no hooks configured")
+	}
+}
+
+func TestMigrationReconcile_PreHookCreatesJob(t *testing.T) {
+	vm := defaultMigrationVM()
+	fakeNX := &fakeNutanixClient{
+		vms:              []nutanix.VM{vm},
+		createImageUUIDs: []string{"img-uuid-001"},
+	}
+
+	hooks := []vmav1alpha1.PlanHookRef{{
+		HookRef: corev1.LocalObjectReference{
+			Name: hookTestName,
+		},
+		Step: hookTestPreStep,
+	}}
+
+	r := buildHookMigrationReconciler(fakeNX, hooks)
+
+	// First reconcile: should create Job and wait
+	result, err := r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Error("expected requeue while hook Job is running")
+	}
+
+	m := getMigration(t, r)
+	if m.Status.VMs[0].Phase != vmav1alpha1.VMPhasePreHook {
+		t.Errorf("expected PreHook, got %s",
+			m.Status.VMs[0].Phase)
+	}
+
+	// Verify Job was created
+	jobName := "vma-" + shortID(migTestMigrationName) +
+		"-" + shortID(migTestVM1ID) + "-pre"
+	job := &batchv1.Job{}
+	if err := r.Get(context.Background(), types.NamespacedName{
+		Name:      jobName,
+		Namespace: migTestTargetNS,
+	}, job); err != nil {
+		t.Fatalf("hook Job not found: %v", err)
+	}
+
+	// Verify Job spec
+	if job.Spec.Template.Spec.Containers[0].Image !=
+		hookTestImage {
+		t.Errorf("expected image %s, got %s",
+			hookTestImage,
+			job.Spec.Template.Spec.Containers[0].Image)
+	}
+
+	// Verify ConfigMap was created
+	cm := &corev1.ConfigMap{}
+	if err := r.Get(context.Background(), types.NamespacedName{
+		Name:      jobName + "-ctx",
+		Namespace: migTestTargetNS,
+	}, cm); err != nil {
+		t.Fatalf("hook ConfigMap not found: %v", err)
+	}
+	if _, ok := cm.Data["vm.json"]; !ok {
+		t.Error("expected vm.json in ConfigMap")
+	}
+	if _, ok := cm.Data["plan.json"]; !ok {
+		t.Error("expected plan.json in ConfigMap")
+	}
+
+	// Verify volume mount
+	found := false
+	for _, mount := range job.Spec.Template.Spec.
+		Containers[0].VolumeMounts {
+		if mount.MountPath == hookConfigMapPath {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected volume mount at %s",
+			hookConfigMapPath)
+	}
+}
+
+func TestMigrationReconcile_PreHookJobSucceeds(t *testing.T) {
+	vm := defaultMigrationVM()
+	fakeNX := &fakeNutanixClient{
+		vms:              []nutanix.VM{vm},
+		createImageUUIDs: []string{"img-uuid-001"},
+	}
+
+	hooks := []vmav1alpha1.PlanHookRef{{
+		HookRef: corev1.LocalObjectReference{
+			Name: hookTestName,
+		},
+		Step: hookTestPreStep,
+	}}
+
+	r := buildHookMigrationReconciler(fakeNX, hooks)
+
+	// First reconcile: creates Job, waits
+	_, err := r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("reconcile 1: %v", err)
+	}
+
+	// Mark Job as succeeded
+	jobName := "vma-" + shortID(migTestMigrationName) +
+		"-" + shortID(migTestVM1ID) + "-pre"
+	job := &batchv1.Job{}
+	if err := r.Get(context.Background(), types.NamespacedName{
+		Name:      jobName,
+		Namespace: migTestTargetNS,
+	}, job); err != nil {
+		t.Fatalf("Job not found: %v", err)
+	}
+	job.Status.Succeeded = 1
+	if err := r.Status().Update(
+		context.Background(), job); err != nil {
+		t.Fatalf("update Job status: %v", err)
+	}
+
+	// Second reconcile: PreHook completes, advances
+	_, err = r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("reconcile 2: %v", err)
+	}
+
+	m := getMigration(t, r)
+	// Should have advanced past PreHook
+	if m.Status.VMs[0].Phase == vmav1alpha1.VMPhasePreHook {
+		t.Error("expected to advance past PreHook " +
+			"after Job succeeded")
+	}
+}
+
+func TestMigrationReconcile_PreHookJobFailsRetries(t *testing.T) {
+	vm := defaultMigrationVM()
+	fakeNX := &fakeNutanixClient{
+		vms:              []nutanix.VM{vm},
+		createImageUUIDs: []string{"img-uuid-001"},
+	}
+
+	hooks := []vmav1alpha1.PlanHookRef{{
+		HookRef: corev1.LocalObjectReference{
+			Name: hookTestName,
+		},
+		Step: hookTestPreStep,
+	}}
+
+	r := buildHookMigrationReconciler(fakeNX, hooks)
+
+	// First reconcile: creates Job
+	_, err := r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("reconcile 1: %v", err)
+	}
+
+	jobName := "vma-" + shortID(migTestMigrationName) +
+		"-" + shortID(migTestVM1ID) + "-pre"
+
+	// Mark Job as failed (attempt 1)
+	job := &batchv1.Job{}
+	if err := r.Get(context.Background(), types.NamespacedName{
+		Name:      jobName,
+		Namespace: migTestTargetNS,
+	}, job); err != nil {
+		t.Fatalf("Job not found: %v", err)
+	}
+	job.Status.Failed = 1
+	if err := r.Status().Update(
+		context.Background(), job); err != nil {
+		t.Fatalf("update Job status: %v", err)
+	}
+
+	// Second reconcile: detects failure, deletes and recreates
+	result, err := r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("reconcile 2: %v", err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Error("expected requeue for retry")
+	}
+
+	m := getMigration(t, r)
+	if m.Status.VMs[0].Phase != vmav1alpha1.VMPhasePreHook {
+		t.Errorf("expected still in PreHook during retry, "+
+			"got %s", m.Status.VMs[0].Phase)
+	}
+}
+
+func TestMigrationReconcile_PreHookJobFailsMaxRetries(
+	t *testing.T,
+) {
+	vm := defaultMigrationVM()
+	fakeNX := &fakeNutanixClient{
+		vms:              []nutanix.VM{vm},
+		createImageUUIDs: []string{"img-uuid-001"},
+	}
+
+	hooks := []vmav1alpha1.PlanHookRef{{
+		HookRef: corev1.LocalObjectReference{
+			Name: hookTestName,
+		},
+		Step: hookTestPreStep,
+	}}
+
+	r := buildHookMigrationReconciler(fakeNX, hooks)
+
+	// First reconcile: creates Job
+	_, err := r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("reconcile 1: %v", err)
+	}
+
+	jobName := "vma-" + shortID(migTestMigrationName) +
+		"-" + shortID(migTestVM1ID) + "-pre"
+
+	// Mark Job as failed at max retries.
+	// Update annotations first, then re-get and update status
+	// (fake client strips status on Update when
+	// WithStatusSubresource is set).
+	job := &batchv1.Job{}
+	nn := types.NamespacedName{
+		Name:      jobName,
+		Namespace: migTestTargetNS,
+	}
+	if err := r.Get(context.Background(), nn, job); err != nil {
+		t.Fatalf("Job not found: %v", err)
+	}
+	job.Annotations[hookAnnotationKey] = "3"
+	if err := r.Update(
+		context.Background(), job); err != nil {
+		t.Fatalf("update Job annotations: %v", err)
+	}
+	// Re-get to pick up fresh ResourceVersion after Update
+	if err := r.Get(context.Background(), nn, job); err != nil {
+		t.Fatalf("re-get Job: %v", err)
+	}
+	job.Status.Failed = 1
+	if err := r.Status().Update(
+		context.Background(), job); err != nil {
+		t.Fatalf("update Job status: %v", err)
+	}
+
+	// Second reconcile: detects max retries, VM fails
+	_, err = r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("reconcile 2: %v", err)
+	}
+
+	m := getMigration(t, r)
+	if m.Status.VMs[0].Phase != vmav1alpha1.VMPhaseFailed {
+		t.Errorf("expected Failed after max retries, got %s",
+			m.Status.VMs[0].Phase)
+	}
+	if m.Status.VMs[0].Error == "" {
+		t.Error("expected error message on failed VM")
+	}
+}
+
+func TestMigrationReconcile_PostHookCreatesJob(t *testing.T) {
+	vm := defaultMigrationVM()
+	fakeNX := &fakeNutanixClient{
+		vms:              []nutanix.VM{vm},
+		createImageUUIDs: []string{"img-uuid-001"},
+	}
+
+	hooks := []vmav1alpha1.PlanHookRef{{
+		HookRef: corev1.LocalObjectReference{
+			Name: hookTestName,
+		},
+		Step: hookTestPostStp,
+	}}
+
+	r := buildHookMigrationReconciler(fakeNX, hooks)
+
+	// First reconcile: advances to ImportDisks (no PreHook)
+	_, err := r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("reconcile 1: %v", err)
+	}
+
+	m := getMigration(t, r)
+	if m.Status.VMs[0].Phase != vmav1alpha1.VMPhaseImportDisks {
+		t.Fatalf("expected ImportDisks, got %s",
+			m.Status.VMs[0].Phase)
+	}
+
+	// Simulate DataVolume succeeding
+	dvName := m.Status.VMs[0].DataVolumeNames[0]
+	dv := &cdiv1beta1.DataVolume{}
+	if err := r.Get(context.Background(), types.NamespacedName{
+		Name:      dvName,
+		Namespace: migTestTargetNS,
+	}, dv); err != nil {
+		t.Fatalf("DV not found: %v", err)
+	}
+	dv.Status.Phase = cdiv1beta1.Succeeded
+	if err := r.Status().Update(
+		context.Background(), dv); err != nil {
+		t.Fatalf("update DV: %v", err)
+	}
+
+	// Second reconcile: advances to PostHook, creates Job
+	result, err := r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("reconcile 2: %v", err)
+	}
+
+	m = getMigration(t, r)
+	if m.Status.VMs[0].Phase != vmav1alpha1.VMPhasePostHook {
+		t.Fatalf("expected PostHook, got %s",
+			m.Status.VMs[0].Phase)
+	}
+	if result.RequeueAfter == 0 {
+		t.Error("expected requeue while post-hook runs")
+	}
+
+	// Verify post-hook Job
+	jobName := "vma-" + shortID(migTestMigrationName) +
+		"-" + shortID(migTestVM1ID) + "-post"
+	job := &batchv1.Job{}
+	if err := r.Get(context.Background(), types.NamespacedName{
+		Name:      jobName,
+		Namespace: migTestTargetNS,
+	}, job); err != nil {
+		t.Fatalf("post-hook Job not found: %v", err)
+	}
+
+	if job.Spec.Template.Spec.Containers[0].Image !=
+		hookTestImage {
+		t.Errorf("expected image %s, got %s",
+			hookTestImage,
+			job.Spec.Template.Spec.Containers[0].Image)
+	}
+}
+
+func TestHookStepSuffix(t *testing.T) {
+	if hookStepSuffix("PreHook") != "pre" {
+		t.Error("expected 'pre' for PreHook")
+	}
+	if hookStepSuffix("PostHook") != "post" {
+		t.Error("expected 'post' for PostHook")
+	}
+}
+
+func TestParseDeadline(t *testing.T) {
+	if parseDeadline("5m") != 300 {
+		t.Errorf("expected 300, got %d", parseDeadline("5m"))
+	}
+	if parseDeadline("1h") != 3600 {
+		t.Errorf("expected 3600, got %d", parseDeadline("1h"))
+	}
+	if parseDeadline("") != hookDefaultDeadlineSecs {
+		t.Errorf("expected %d for empty, got %d",
+			hookDefaultDeadlineSecs, parseDeadline(""))
+	}
+	if parseDeadline("invalid") != hookDefaultDeadlineSecs {
+		t.Errorf("expected %d for invalid, got %d",
+			hookDefaultDeadlineSecs,
+			parseDeadline("invalid"))
+	}
+}
+
+func TestGetHookAttempt(t *testing.T) {
+	// No annotations
+	job := &batchv1.Job{}
+	if getHookAttempt(job) != 1 {
+		t.Error("expected 1 for nil annotations")
+	}
+
+	// With annotation
+	job.Annotations = map[string]string{
+		hookAnnotationKey: "2",
+	}
+	if getHookAttempt(job) != 2 {
+		t.Errorf("expected 2, got %d", getHookAttempt(job))
+	}
+
+	// Invalid annotation
+	job.Annotations[hookAnnotationKey] = "invalid"
+	if getHookAttempt(job) != 1 {
+		t.Error("expected 1 for invalid annotation")
 	}
 }

@@ -129,6 +129,8 @@ func SetupMigrationController(mgr ctrl.Manager) error {
 // +kubebuilder:rbac:groups=cdi.kubevirt.io,resources=datavolumes,verbs=get;list;create;delete
 // +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachines,verbs=get;create;update
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;create;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;create;delete
+// +kubebuilder:rbac:groups=vma.nutanix.io,resources=hooks,verbs=get
 
 // Reconcile handles Migration reconciliation.
 func (r *MigrationReconciler) Reconcile(
@@ -482,8 +484,11 @@ func (r *MigrationReconciler) executePhase(
 		return r.phasePrecopy(ctx, vmStatus, mctx)
 	case vmav1alpha1.VMPhaseFinalSync:
 		return r.phaseFinalSync(ctx, vmStatus, mctx)
+	case vmav1alpha1.VMPhasePreHook:
+		return r.runHook(ctx, vmStatus, mctx, "PreHook")
+	case vmav1alpha1.VMPhasePostHook:
+		return r.runHook(ctx, vmStatus, mctx, "PostHook")
 	default:
-		// PreHook, PostHook are stubs (US-015)
 		return PhaseResult{Completed: true}
 	}
 }

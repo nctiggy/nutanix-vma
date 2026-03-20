@@ -36,6 +36,14 @@ rules:
   verbs:
   - get
 - apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+- apiGroups:
   - cdi.kubevirt.io
   resources:
   - datavolumes
@@ -59,6 +67,14 @@ rules:
   verbs:
   - get
   - list
+- apiGroups:
+  - vma.nutanix.io
+  resources:
+  - hooks
+  - networkmaps
+  - storagemaps
+  verbs:
+  - get
 - apiGroups:
   - vma.nutanix.io
   resources:
@@ -88,10 +104,3 @@ rules:
   - nutanixproviders/finalizers
   verbs:
   - update
-- apiGroups:
-  - vma.nutanix.io
-  resources:
-  - networkmaps
-  - storagemaps
-  verbs:
-  - get

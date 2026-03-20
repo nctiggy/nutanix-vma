@@ -741,3 +741,54 @@ Iteration 13 [2026-03-20T08:31:51Z]: Migration Controller -- VM Creation & Clean
 ### Issues: None
 ---
 Iteration 14 [2026-03-20T08:58:13Z]: Migration Controller -- VM Creation & Cleanup COMPLETED. CI passed (run 23335759684). Attempt 1.
+
+---
+
+## US-015: Hook System
+
+### Status: Implemented, pending CI verification
+
+### What was done:
+- Created internal/controller/hook_runner.go: complete hook system for pre/post migration hooks
+  - runHook: orchestrates hook Job lifecycle for PreHook and PostHook steps
+  - findHook: resolves Hook CR from PlanVM.Hooks references by step name
+  - createHookConfigMap: creates ConfigMap with vm.json and plan.json (VM details + plan details) mounted at /tmp/hook/
+  - createHookJob/createHookJobWithAttempt: creates K8s Job from Hook CR spec (image, deadline, serviceAccount), ConfigMap volume mount, owner reference to Migration CR, attempt tracking via annotation
+  - checkHookJob: monitors Job status (Succeeded -> complete, Failed -> retry, Running -> requeue)
+  - Retry logic: up to 3 attempts (hookMaxRetries), deletes failed Job and recreates with incremented attempt annotation
+  - cleanupHookResources: best-effort cleanup of Job and ConfigMap after completion or max retries
+  - parseDeadline: converts Hook.Spec.Deadline duration string to seconds for Job.Spec.ActiveDeadlineSeconds
+  - hookStepSuffix: "pre"/"post" naming for deterministic Job names
+- Replaced PreHook/PostHook stubs in migration_controller.go executePhase switch with real handlers calling runHook
+- Added RBAC markers: batch/jobs (get;create;delete), vma.nutanix.io/hooks (get)
+- Regenerated config/rbac/role.yaml via make manifests
+- Marked US-014 as completed in prd.json
+- Added 8 unit tests to migration_controller_test.go:
+  - PreHook with no hooks configured (skips), PreHook creates Job (verifies image, ConfigMap, volume mount)
+  - PreHook Job succeeds (advances past PreHook), PreHook Job fails and retries (stays in PreHook)
+  - PreHook Job fails after max retries (VM fails), PostHook creates Job after DV import
+  - hookStepSuffix, parseDeadline, getHookAttempt helpers
+- Added buildHookMigrationReconciler test helper with Hook CR and PlanHookRef support
+- Added hook integration test (test/integration/migration_test.go):
+  - Creates Hook CR + Plan with PreHook -> creates Migration -> verifies Job created in target NS
+  - Marks Job as Succeeded -> verifies VM advances past PreHook -> marks DVs Succeeded -> verifies Completed
+  - Verifies ConfigMap with vm.json/plan.json, Job labels, volume mount
+  - AfterEach cleanup for Jobs and Hook CRs
+
+### Verification:
+- `make build` passes
+- `make lint` passes (0 issues)
+- `go test ./internal/controller/` passes (78.9% coverage)
+- `go test $(non-integration)` passes (all packages)
+- Integration test passes when run individually (45s)
+- Integration suite has pre-existing TCP port exhaustion when running all 9 specs together (not caused by this change)
+
+### Patterns discovered:
+- fake client WithStatusSubresource strips status on Update, then Status().Update only saves status -- must re-Get between Update and Status().Update to get fresh ResourceVersion
+- Hook Job names use shortID of migration and VM for determinism: vma-{migShort}-{vmShort}-{pre|post}
+- K8s Job backoffLimit=0 + manual retry via annotation avoids interference with K8s retry logic
+- ConfigMap volume mount provides hook context without requiring RBAC for the hook Job
+- batchv1 scheme is included in clientgoscheme (no separate registration needed)
+- Integration tests with many resources (Jobs, ConfigMaps, Hooks) can exhaust TCP ephemeral ports when running alongside other tests
+
+### Issues: None

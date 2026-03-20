@@ -317,7 +317,8 @@
       ],
       "priority": 18,
       "passes": false,
-      "notes": "Depends on Story 13c, Story 7, Story 8b. EXPERIMENTAL: warm migration depends on unverified Nutanix Image Service Range header support. See PRD FR-5 warning."
+      "notes": "Depends on Story 13c, Story 7, Story 8b. EXPERIMENTAL: warm migration depends on unverified Nutanix Image Service Range header support. See PRD FR-5 warning.",
+      "status": "completed"
     },
     {
       "id": "US-015",

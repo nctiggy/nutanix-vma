@@ -22,6 +22,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -29,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	kubevirtv1 "kubevirt.io/api/core/v1"
 	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	vmav1alpha1 "github.com/nctiggy/nutanix-vma/api/v1alpha1"
 )
@@ -220,6 +222,27 @@ var _ = Describe("Migration Controller", func() {
 		if err := k8sClient.List(ctx, podList); err == nil {
 			for i := range podList.Items {
 				_ = k8sClient.Delete(ctx, &podList.Items[i])
+			}
+		}
+
+		// Cleanup Jobs in target namespace (hook Jobs)
+		jobList := &batchv1.JobList{}
+		if err := k8sClient.List(ctx, jobList); err == nil {
+			propagation := metav1.DeletePropagationBackground
+			for i := range jobList.Items {
+				_ = k8sClient.Delete(ctx,
+					&jobList.Items[i],
+					&client.DeleteOptions{
+						PropagationPolicy: &propagation,
+					})
+			}
+		}
+
+		// Cleanup Hook CRs
+		hookList := &vmav1alpha1.HookList{}
+		if err := k8sClient.List(ctx, hookList); err == nil {
+			for i := range hookList.Items {
+				_ = k8sClient.Delete(ctx, &hookList.Items[i])
 			}
 		}
 	})
@@ -500,6 +523,170 @@ var _ = Describe("Migration Controller", func() {
 			Expect(m.Status.VMs[0].Phase).To(
 				Equal(vmav1alpha1.VMPhaseCompleted))
 			Expect(m.Status.VMs[0].Warm).NotTo(BeNil())
+		})
+	})
+
+	Context("cold migration with PreHook", func() {
+		It("should create hook Job, complete after "+
+			"Job succeeds", func() {
+			// Create Hook CR
+			hook := &vmav1alpha1.Hook{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "integ-prehook",
+					Namespace: migTestNS,
+				},
+				Spec: vmav1alpha1.HookSpec{
+					Image:          "busybox:latest",
+					Deadline:       "5m",
+					ServiceAccount: "default",
+				},
+			}
+			Expect(k8sClient.Create(ctx, hook)).To(Succeed())
+
+			// Create Plan with PreHook on the VM
+			plan := &vmav1alpha1.MigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "mig-hook-plan",
+					Namespace: migTestNS,
+				},
+				Spec: vmav1alpha1.MigrationPlanSpec{
+					ProviderRef: corev1.LocalObjectReference{
+						Name: migProviderName,
+					},
+					TargetNamespace: migTargetNS,
+					NetworkMapRef: corev1.LocalObjectReference{
+						Name: migNetMapName,
+					},
+					StorageMapRef: corev1.LocalObjectReference{
+						Name: migStorMapName,
+					},
+					VMs: []vmav1alpha1.PlanVM{{
+						ID: "vm-uuid-001",
+						Hooks: []vmav1alpha1.PlanHookRef{{
+							HookRef: corev1.LocalObjectReference{
+								Name: "integ-prehook",
+							},
+							Step: "PreHook",
+						}},
+					}},
+					TargetPowerState: vmav1alpha1.
+						TargetPowerStateRunning,
+				},
+			}
+			Expect(k8sClient.Create(ctx, plan)).To(Succeed())
+
+			// Create Migration
+			migration := &vmav1alpha1.Migration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "mig-hook-test",
+					Namespace: migTestNS,
+				},
+				Spec: vmav1alpha1.MigrationSpec{
+					PlanRef: corev1.LocalObjectReference{
+						Name: "mig-hook-plan",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, migration)).
+				To(Succeed())
+
+			// Wait for hook Job to be created
+			var hookJobName string
+			Eventually(func(g Gomega) {
+				// List Jobs in target namespace
+				jobs := &batchv1.JobList{}
+				g.Expect(k8sClient.List(ctx, jobs)).
+					To(Succeed())
+				found := false
+				for _, j := range jobs.Items {
+					if j.Labels != nil &&
+						j.Labels["vma.nutanix.io/hook"] ==
+							"integ-prehook" {
+						found = true
+						hookJobName = j.Name
+					}
+				}
+				g.Expect(found).To(BeTrue(),
+					"hook Job not found")
+			}, migTimeout, migInterval).Should(Succeed())
+
+			// Verify VM is in PreHook phase
+			m := &vmav1alpha1.Migration{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      "mig-hook-test",
+				Namespace: migTestNS,
+			}, m)).To(Succeed())
+			Expect(m.Status.VMs).NotTo(BeEmpty())
+			Expect(m.Status.VMs[0].Phase).To(
+				Equal(vmav1alpha1.VMPhasePreHook))
+
+			// Verify ConfigMap was created
+			cm := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      hookJobName + "-ctx",
+				Namespace: migTargetNS,
+			}, cm)).To(Succeed())
+			Expect(cm.Data).To(HaveKey("vm.json"))
+			Expect(cm.Data).To(HaveKey("plan.json"))
+
+			// Mark hook Job as succeeded
+			Eventually(func(g Gomega) {
+				job := &batchv1.Job{}
+				g.Expect(k8sClient.Get(ctx,
+					types.NamespacedName{
+						Name:      hookJobName,
+						Namespace: migTargetNS,
+					}, job)).To(Succeed())
+				job.Status.Succeeded = 1
+				g.Expect(k8sClient.Status().Update(
+					ctx, job)).To(Succeed())
+			}, migTimeout, migInterval).Should(Succeed())
+
+			// Wait for DataVolumes (VM advances past PreHook)
+			Eventually(func(g Gomega) {
+				m := &vmav1alpha1.Migration{}
+				g.Expect(k8sClient.Get(ctx,
+					types.NamespacedName{
+						Name:      "mig-hook-test",
+						Namespace: migTestNS,
+					}, m)).To(Succeed())
+				g.Expect(m.Status.VMs).NotTo(BeEmpty())
+				g.Expect(m.Status.VMs[0].DataVolumeNames).
+					NotTo(BeEmpty())
+			}, migTimeout, migInterval).Should(Succeed())
+
+			// Mark DataVolumes as Succeeded
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      "mig-hook-test",
+				Namespace: migTestNS,
+			}, m)).To(Succeed())
+			for _, dvName := range m.Status.VMs[0].
+				DataVolumeNames {
+				Eventually(func(g Gomega) {
+					dv := &cdiv1beta1.DataVolume{}
+					g.Expect(k8sClient.Get(ctx,
+						types.NamespacedName{
+							Name:      dvName,
+							Namespace: migTargetNS,
+						}, dv)).To(Succeed())
+					dv.Status.Phase = cdiv1beta1.Succeeded
+					g.Expect(k8sClient.Status().Update(
+						ctx, dv)).To(Succeed())
+				}, migTimeout, migInterval).Should(Succeed())
+			}
+
+			// Wait for completion
+			Eventually(func(g Gomega) {
+				m := &vmav1alpha1.Migration{}
+				g.Expect(k8sClient.Get(ctx,
+					types.NamespacedName{
+						Name:      "mig-hook-test",
+						Namespace: migTestNS,
+					}, m)).To(Succeed())
+				g.Expect(m.Status.Phase).To(
+					Equal(vmav1alpha1.
+						MigrationPhaseCompleted))
+			}, migTimeout, migInterval).Should(Succeed())
 		})
 	})
 })
