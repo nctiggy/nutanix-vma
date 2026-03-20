@@ -115,11 +115,80 @@ This project is designed to be built using [Ralph](https://github.com/snarktank/
 - GitHub Actions CI/CD plan
 - E2E test framework design (gated behind real infrastructure)
 
-### What's Next
+### Running Ralph
 
-1. Convert PRD to `prd.json` for Ralph
-2. Run Ralph to implement Story 1 through Story 19
-3. Validate against a real Nutanix cluster when access is available
+#### Prerequisites
+
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated (`npm install -g @anthropic-ai/claude-code`)
+- `jq` installed (`brew install jq` or `apt install jq`)
+- [Ralph](https://github.com/snarktank/ralph) installed (copy to `scripts/ralph/` or install via Claude Code marketplace)
+
+#### Step 1 -- Install Ralph
+
+```bash
+# Option A: Copy Ralph files directly into the repo
+mkdir -p scripts/ralph
+curl -sL https://raw.githubusercontent.com/snarktank/ralph/main/ralph.sh -o scripts/ralph/ralph.sh
+curl -sL https://raw.githubusercontent.com/snarktank/ralph/main/CLAUDE.md -o scripts/ralph/CLAUDE.md
+chmod +x scripts/ralph/ralph.sh
+
+# Option B: Install via Claude Code marketplace
+claude /plugin marketplace add snarktank/ralph
+```
+
+#### Step 2 -- Convert the PRD to prd.json
+
+Open Claude Code in this repo and run:
+
+```
+Load the ralph skill and convert tasks/prd-nutanix-vma.md to prd.json
+```
+
+This creates `prd.json` in `scripts/ralph/` with user stories structured for autonomous execution.
+
+#### Step 3 -- Run Ralph
+
+```bash
+# Run with Claude Code (recommended), default 10 iterations
+./scripts/ralph/ralph.sh --tool claude
+
+# Run with more iterations (22 stories = more iterations needed)
+./scripts/ralph/ralph.sh --tool claude 30
+
+# Run with Amp instead
+./scripts/ralph/ralph.sh --tool amp 30
+```
+
+Ralph will:
+1. Create a feature branch from the PRD spec
+2. Pick the highest-priority incomplete story
+3. Implement the story (one context window of work)
+4. Run `make build && make test` to verify
+5. Commit if checks pass
+6. Update `prd.json` completion status
+7. Append learnings to `progress.txt`
+8. Repeat with a fresh AI instance
+
+Each iteration is stateless -- Ralph persists memory only through git commits, `progress.txt`, and `prd.json`.
+
+#### Monitoring Progress
+
+```bash
+# Check which stories are complete
+cat scripts/ralph/prd.json | jq '.userStories[] | {id, title, status}'
+
+# Check learnings from past iterations
+cat scripts/ralph/progress.txt
+
+# Check git log for Ralph's commits
+git log --oneline
+```
+
+### What's Next After Ralph
+
+1. Validate against a real Nutanix cluster when access is available
+2. Run a second Ralph loop with a cluster-validation PRD
+3. Promote warm migration from experimental to production once CBT data source is confirmed
 
 ## Repository Structure
 
