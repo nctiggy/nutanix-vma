@@ -61,3 +61,31 @@ Iteration 1 [2026-03-20T04:44:47Z]: Project Scaffolding COMPLETED. CI passed (ru
 ### Issues: None
 ---
 Iteration 2 [2026-03-20T04:50:45Z]: CRD Types -- Provider, NetworkMap, StorageMap COMPLETED. CI passed (run 23329526148). Attempt 1.
+
+---
+
+## US-002b: CRD Types -- MigrationPlan, Migration, Hook
+
+### Status: Implemented, pending CI verification
+
+### What was done:
+- Created api/v1alpha1/migrationplan_types.go (MigrationPlan: ProviderRef, TargetNamespace, Type cold/warm, NetworkMapRef, StorageMapRef, VMs[]PlanVM with hooks, MaxInFlight, TargetPowerState, WarmConfig; status: Phase, VMs[]VMValidationStatus with Concerns)
+- Created api/v1alpha1/migration_types.go (Migration: PlanRef, Cutover timestamp, Cancel list; status: Phase, Started/Completed, VMs[]VMMigrationStatus with full resource tracking: SnapshotUUID, ImageUUIDs, TaskUUID, DataVolumeNames, OriginalPowerState)
+- Created api/v1alpha1/hook_types.go (Hook: Image, Playbook base64, Deadline, ServiceAccount; status: Conditions)
+- Created sample CRs in config/samples/ for all 3 types
+- Generated deepcopy and CRD YAML (6 total CRDs now in config/crd/bases/)
+
+### Verification:
+- `make generate` passes
+- `make manifests` passes (6 CRD YAML files generated)
+- `make build` passes
+- `make test` passes (exits 0)
+
+### Patterns discovered:
+- `go fmt` auto-aligns const blocks -- the formatter adjusted spacing on VMMigrationPhase consts
+- VMMigrationStatus resource tracking fields (SnapshotUUID, ImageUUIDs, TaskUUID, DataVolumeNames, OriginalPowerState) are critical for idempotent reconciliation in US-013a
+- No new scheme registration needed in cmd/main.go -- types auto-register via init() in each _types.go file through the shared SchemeBuilder
+
+### Issues: None
+---
+Iteration 3 [2026-03-20T04:56:41Z]: CRD Types -- MigrationPlan, Migration, Hook COMPLETED. CI passed (run 23329657040). Attempt 1.

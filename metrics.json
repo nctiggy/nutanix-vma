@@ -4,11 +4,11 @@
   "totalDurationSeconds": null,
   "totalDurationHuman": null,
   "maxIterations": 30,
-  "totalIterations": 1,
-  "storiesCompleted": 1,
+  "totalIterations": 2,
+  "storiesCompleted": 2,
   "storiesRemaining": 0,
-  "totalCIRuns": 1,
-  "ciPasses": 1,
+  "totalCIRuns": 2,
+  "ciPasses": 2,
   "ciFails": 0,
   "ciSkipped": 0,
   "noCommitIterations": 0,
@@ -24,6 +24,18 @@
       "endTime": "2026-03-20T04:44:47Z",
       "durationSeconds": 671,
       "durationHuman": "11m 11s",
+      "attemptNumber": 1
+    },
+    {
+      "iteration": 2,
+      "storyId": "US-002a",
+      "storyTitle": "CRD Types -- Provider, NetworkMap, StorageMap",
+      "result": "ci_pass",
+      "ciRunId": "23329526148",
+      "startTime": "2026-03-20T04:44:51Z",
+      "endTime": "2026-03-20T04:50:44Z",
+      "durationSeconds": 353,
+      "durationHuman": "5m 53s",
       "attemptNumber": 1
     }
   ]

@@ -51,7 +51,8 @@
       ],
       "priority": 3,
       "passes": false,
-      "notes": "Depends on Story 2a. Resource tracking fields are critical for idempotency in Story 13a -- do not omit them."
+      "notes": "Depends on Story 2a. Resource tracking fields are critical for idempotency in Story 13a -- do not omit them.",
+      "status": "completed"
     },
     {
       "id": "US-003",
