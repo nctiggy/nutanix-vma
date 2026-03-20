@@ -275,3 +275,5 @@ Iteration 3 [2026-03-20T05:45:08Z]: Nutanix API Client -- Snapshots & Images COM
 - When all stubs are removed, the stub test and assertNotImplemented helper become dead code -- remove them to avoid lint warnings
 
 ### Issues: None
+---
+Iteration 4 [2026-03-20T05:56:46Z]: Nutanix API Client -- Networking, Storage & Cluster Discovery COMPLETED. CI passed (run 23330980067). Attempt 1.

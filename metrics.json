@@ -4,11 +4,11 @@
   "totalDurationSeconds": 1825,
   "totalDurationHuman": "30m 25s",
   "maxIterations": 30,
-  "totalIterations": 5,
-  "storiesCompleted": 5,
+  "totalIterations": 6,
+  "storiesCompleted": 6,
   "storiesRemaining": 20,
-  "totalCIRuns": 5,
-  "ciPasses": 5,
+  "totalCIRuns": 6,
+  "ciPasses": 6,
   "ciFails": 0,
   "ciSkipped": 0,
   "noCommitIterations": 0,
@@ -72,6 +72,18 @@
       "endTime": "2026-03-20T05:36:01Z",
       "durationSeconds": 652,
       "durationHuman": "10m 52s",
+      "attemptNumber": 1
+    },
+    {
+      "iteration": 3,
+      "storyId": "US-005",
+      "storyTitle": "Nutanix API Client -- Snapshots & Images",
+      "result": "ci_pass",
+      "ciRunId": "23330729625",
+      "startTime": "2026-03-20T05:36:04Z",
+      "endTime": "2026-03-20T05:45:07Z",
+      "durationSeconds": 543,
+      "durationHuman": "9m 3s",
       "attemptNumber": 1
     }
   ]
