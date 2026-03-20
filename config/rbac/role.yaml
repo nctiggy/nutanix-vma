@@ -35,6 +35,7 @@ rules:
   - vma.nutanix.io
   resources:
   - migrationplans
+  - migrations
   - nutanixproviders
   verbs:
   - get
@@ -46,6 +47,7 @@ rules:
   - vma.nutanix.io
   resources:
   - migrationplans/status
+  - migrations/status
   - nutanixproviders/status
   verbs:
   - get
@@ -54,13 +56,14 @@ rules:
 - apiGroups:
   - vma.nutanix.io
   resources:
+  - migrations/finalizers
+  - nutanixproviders/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - vma.nutanix.io
+  resources:
   - networkmaps
   - storagemaps
   verbs:
   - get
-- apiGroups:
-  - vma.nutanix.io
-  resources:
-  - nutanixproviders/finalizers
-  verbs:
-  - update

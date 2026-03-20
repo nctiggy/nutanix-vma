@@ -190,6 +190,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := controller.SetupMigrationController(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "Migration")
+		os.Exit(1)
+	}
+
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
