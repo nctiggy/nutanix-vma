@@ -117,23 +117,21 @@ This project is designed to be built using [Ralph](https://github.com/snarktank/
 
 ### Running Ralph
 
+There are two ways to run Ralph: the standard loop (local verification only) or the CI-verified loop (recommended).
+
 #### Prerequisites
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated (`npm install -g @anthropic-ai/claude-code`)
+- [GitHub CLI](https://cli.github.com/) installed and authenticated (`gh auth login`)
 - `jq` installed (`brew install jq` or `apt install jq`)
-- [Ralph](https://github.com/snarktank/ralph) installed (copy to `scripts/ralph/` or install via Claude Code marketplace)
 
 #### Step 1 -- Install Ralph
 
 ```bash
-# Option A: Copy Ralph files directly into the repo
 mkdir -p scripts/ralph
 curl -sL https://raw.githubusercontent.com/snarktank/ralph/main/ralph.sh -o scripts/ralph/ralph.sh
 curl -sL https://raw.githubusercontent.com/snarktank/ralph/main/CLAUDE.md -o scripts/ralph/CLAUDE.md
 chmod +x scripts/ralph/ralph.sh
-
-# Option B: Install via Claude Code marketplace
-claude /plugin marketplace add snarktank/ralph
 ```
 
 #### Step 2 -- Convert the PRD to prd.json
@@ -144,44 +142,83 @@ Open Claude Code in this repo and run:
 Load the ralph skill and convert tasks/prd-nutanix-vma.md to prd.json
 ```
 
-This creates `prd.json` in `scripts/ralph/` with user stories structured for autonomous execution.
+This creates `prd.json` with user stories structured for autonomous execution.
 
 #### Step 3 -- Run Ralph
 
+**Option A: CI-Verified Loop (Recommended)**
+
 ```bash
-# Run with Claude Code (recommended), default 10 iterations
-./scripts/ralph/ralph.sh --tool claude
-
-# Run with more iterations (22 stories = more iterations needed)
-./scripts/ralph/ralph.sh --tool claude 30
-
-# Run with Amp instead
-./scripts/ralph/ralph.sh --tool amp 30
+./scripts/ralph-ci.sh 30
 ```
 
-Ralph will:
-1. Create a feature branch from the PRD spec
-2. Pick the highest-priority incomplete story
-3. Implement the story (one context window of work)
-4. Run `make build && make test` to verify
-5. Commit if checks pass
-6. Update `prd.json` completion status
-7. Append learnings to `progress.txt`
-8. Repeat with a fresh AI instance
+This is a custom wrapper that adds GitHub Actions as an external verification gate:
 
-Each iteration is stateless -- Ralph persists memory only through git commits, `progress.txt`, and `prd.json`.
+```
+For each iteration:
+  1. Claude Code implements the next incomplete story
+  2. Runs make build && make test locally (quick sanity check)
+  3. Commits and pushes to GitHub
+  4. Watches the CI run via `gh run watch`
+  5. IF CI passes  -> marks story complete, moves to next story
+  6. IF CI fails   -> does NOT mark complete, writes CI failure
+                      logs to progress.txt, moves to next iteration
+  7. Next iteration: fresh context window reads the failure logs
+                     and debugs the issue
+```
+
+The key insight: **a fresh context window for debugging is a feature, not a bug.** A new Claude instance reads the CI failure logs without the baggage of the previous context window's assumptions. This prevents hallucination cascades where a stuck context keeps trying the same broken approach.
+
+**Option B: Standard Ralph Loop (Local Only)**
+
+```bash
+./scripts/ralph/ralph.sh --tool claude 30
+```
+
+This is the standard Ralph loop -- it only verifies locally with `make build && make test`. No push, no CI verification. Faster but less reliable.
+
+#### How the CI-Verified Loop Works
+
+```
+   Ralph (Claude Code)          GitHub              CI Runner
+   ==================          ======              =========
+   Read prd.json + progress.txt
+   Pick next incomplete story
+   Implement story
+   make build && make test
+   git commit
+   git push ─────────────────► receives push
+                                triggers CI ──────► lint, build,
+                                                    unit test,
+                                                    integration test
+   gh run watch ◄──────────────────────────────────►
+   (blocks until CI completes)
+                                                    CI result
+   IF pass: mark complete ◄─────────────────────── ✅ green
+   IF fail: save logs     ◄─────────────────────── ❌ red
+            to progress.txt
+            DO NOT mark complete
+
+   Next iteration (FRESH context window):
+   Read progress.txt
+   See: "Story X failed CI. Logs: ..."
+   Debug with clean context
+```
 
 #### Monitoring Progress
 
 ```bash
 # Check which stories are complete
-cat scripts/ralph/prd.json | jq '.userStories[] | {id, title, status}'
+jq '.userStories[] | {id, title, status}' prd.json
 
-# Check learnings from past iterations
-cat scripts/ralph/progress.txt
+# Check learnings and CI failure logs from past iterations
+cat progress.txt
 
 # Check git log for Ralph's commits
 git log --oneline
+
+# Check GitHub Actions runs
+gh run list --limit 10
 ```
 
 ### What's Next After Ralph
