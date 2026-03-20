@@ -45,14 +45,23 @@ type fakeNutanixClient struct {
 	listSubnetsErr    error
 	listClustersErr   error
 	listContainersErr error
+	getVMErr          error
 }
 
 func (f *fakeNutanixClient) ListVMs(_ context.Context) ([]nutanix.VM, error) {
 	return f.vms, f.listVMsErr
 }
 
-func (f *fakeNutanixClient) GetVM(_ context.Context, _ string) (*nutanix.VM, error) {
-	return nil, errors.New("not implemented")
+func (f *fakeNutanixClient) GetVM(_ context.Context, uuid string) (*nutanix.VM, error) {
+	if f.getVMErr != nil {
+		return nil, f.getVMErr
+	}
+	for i := range f.vms {
+		if f.vms[i].ExtID == uuid {
+			return &f.vms[i], nil
+		}
+	}
+	return nil, errors.New("VM not found: " + uuid)
 }
 
 func (f *fakeNutanixClient) PowerOffVM(_ context.Context, _ string) error {

@@ -103,16 +103,25 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).NotTo(HaveOccurred())
 
-	// Register the Provider controller with a fast-failing client factory.
-	// Integration tests use the mock Nutanix server; short timeouts prevent
-	// reconciliation from blocking on unreachable PE URLs.
+	// Fast-failing client factory for integration tests: short timeouts
+	// prevent reconciliation from blocking on unreachable PE URLs.
+	fastFactory := func(config nutanix.ClientConfig) (nutanix.NutanixClient, error) {
+		config.Timeout = 2 * time.Second
+		config.MaxRetries = 0
+		return nutanix.NewClient(config)
+	}
+
+	// Register the Provider controller
 	err = (&controller.ProviderReconciler{
-		Client: mgr.GetClient(),
-		ClientFactory: func(config nutanix.ClientConfig) (nutanix.NutanixClient, error) {
-			config.Timeout = 2 * time.Second
-			config.MaxRetries = 0
-			return nutanix.NewClient(config)
-		},
+		Client:        mgr.GetClient(),
+		ClientFactory: fastFactory,
+	}).SetupWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+
+	// Register the Plan controller
+	err = (&controller.PlanReconciler{
+		Client:        mgr.GetClient(),
+		ClientFactory: fastFactory,
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
