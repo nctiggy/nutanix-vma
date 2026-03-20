@@ -303,6 +303,65 @@ Updated README with full documentation including ASCII flow diagram of the Ralph
 
 **What Claude did**: Updated this document (`docs/how-we-built-this.md`) with Prompts 7-12 capturing the full conversation from PRD v3 fixes through CI-verified loop, telemetry, and this meta-update.
 
+### Prompt 13 -- Convert PRD to prd.json
+
+> Load the ralph skill and convert tasks/prd-nutanix-vma.md to prd.json
+
+**What Claude did**: Fetched Ralph's `CLAUDE.md`, `prompt.md`, and `prd.json.example` to understand the exact schema. Converted all 23 stories from the PRD into `prd.json` with: id, title, full description (implementation details embedded), acceptanceCriteria, priority (1-23 execution order), passes: false, and notes (dependencies + warnings). Created `progress.txt` with empty Codebase Patterns section. Committed and pushed.
+
+### Prompt 14 -- Ralph Loop Ended (Bug #1)
+
+> The ralph loop just ended. why did that happen?
+
+**What Claude did**: Investigated via `gh run list` and `gh run view --log-failed`. Found US-003 CI failed (6 lint errors: 3 errcheck + 3 unused). Discovered `ralph-ci.sh` bug #1: `set -euo pipefail` killed the script when `gh run watch --exit-status` returned non-zero. Added `|| true` and API-based conclusion check. Wrote failure context to `progress.txt`. Pushed fix.
+
+### Prompt 15 -- Story Mismatch Question
+
+> Its running currently but it looks like it ran a github action already for the prd (us-004) story that we are currently on. Is this correct?
+
+**What Claude did**: Checked `gh run list` and explained the tracking mismatch -- Ralph fixed US-003 AND implemented US-004 in one context window, but `ralph-ci.sh` only tracked one story per iteration. The display lagged reality but work was flowing correctly.
+
+### Prompt 16 -- Ralph Stopped Again (Bug #2)
+
+> Ok, ralph stopped but it looks like tests in github actions failed.. is this right?
+
+**What Claude did**: Investigated US-017 CI failure (2 staticcheck lint errors: deprecated `GetEventRecorderFor`). Discovered `ralph-ci.sh` bug #2: `pipefail` makes a pipe's exit code come from the first failing command (`gh run watch`), not the last (`tail`). `|| true` only caught `tail`'s exit code. Fixed by writing to temp file instead of piping. Wrote failure context to `progress.txt`. Pushed fix.
+
+### Prompt 17 -- Are We Done?
+
+> Are we done? What can I do to see the results?
+
+**What Claude did**: Checked `gh run list`, `prd.json` status, `git log`, and verified all 23 stories had implementation commits with CI passing. Found 20/23 marked complete in `prd.json` (US-017/018/019 code was committed but not marked due to the crash). Provided full status table with CI attempts per story and instructions for building, deploying, and using the project.
+
+### Prompt 18 -- Web UI Question
+
+> As part of this, did we create a web frontend UI similar to forklift?
+
+**What Claude did**: Confirmed no -- Web UI was explicitly listed as a non-goal in the PRD. Explained what UX was built (kubectl plugin, CRD status, Events, Prometheus metrics). Offered to add a web UI as a follow-up PRD/Ralph loop.
+
+### Prompt 19 -- Post-Mortem Documentation
+
+> Can you update the how we built this doc with the length of run time, how long each story took, where there were issues, etc? Anything else you think would be relevant
+
+**What Claude did**: Reconstructed full timeline from `git log` timestamps. Added Phase 5 (Ralph Execution) and Phase 6 (Results) to this document with: minute-level timeline, overall stats (23 stories, 64 commits, 22,810 lines Go, 9.5h wall clock), per-story timing table, detailed failure analysis for all 3 failure scenarios, `ralph-ci.sh` bug documentation, code output breakdown, and 12 takeaways.
+
+### Prompt 20 -- Metrics Data Question
+
+> Did you use the metrics.json and metrics-report.md to help guide how long this ran for?
+
+**What Claude did**: Admitted no -- initially reconstructed from `git log`. Found the metrics files existed with good data (24 iterations recorded). Updated the per-story timing table with actual `metrics.json` values (more accurate). Added a Telemetry System Performance section documenting what the auto-recording captured vs missed across the 3 runs.
+
+### Prompt 21 -- Fix Metrics Overwrite + Update Prompts
+
+> Can we fix the mechanism that overwrote the metrics and metrics-report? I want to use this mechanism again for feature requests. Also, have you updated all the prompts from where we last left off in the doc?
+
+**What Claude did**: Fixed 3 issues in `ralph-ci.sh` metrics handling:
+1. On resume, read `runStart` from existing `metrics.json` (not reset to "now") so total duration is calculated from the original start
+2. Continue iteration numbering from where we left off (`ITERATION_OFFSET`)
+3. Added `--reset` flag to archive old metrics and start fresh for a new feature run (`metrics-archive/` directory)
+
+Updated this document with Prompts 13-21.
+
 ---
 
 ## Phase 5: Ralph Execution

@@ -13,6 +13,7 @@
 # Usage:
 #   ./scripts/ralph-ci.sh [max_iterations]
 #   ./scripts/ralph-ci.sh 30
+#   ./scripts/ralph-ci.sh --reset 30    # Reset metrics for a new feature run
 #
 # Prerequisites:
 #   - Claude Code installed and authenticated
@@ -30,10 +31,27 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-MAX_ITERATIONS="${1:-30}"
 TOOL="claude"
 METRICS_FILE="$REPO_ROOT/metrics.json"
 METRICS_REPORT="$REPO_ROOT/metrics-report.md"
+RESET_METRICS=false
+MAX_ITERATIONS=30
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --reset)
+            RESET_METRICS=true
+            shift
+            ;;
+        *)
+            if [[ "$1" =~ ^[0-9]+$ ]]; then
+                MAX_ITERATIONS="$1"
+            fi
+            shift
+            ;;
+    esac
+done
 
 # Colors
 RED='\033[0;31m'
@@ -70,13 +88,23 @@ fi
 touch progress.txt
 
 # ============================================================
-# Telemetry: Initialize metrics.json
+# Telemetry: Initialize or resume metrics.json
 # ============================================================
-RUN_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-RUN_START_EPOCH=$(date +%s)
 
-# Initialize or load existing metrics
+# Handle --reset: archive old metrics and start fresh
+if [ "$RESET_METRICS" = true ] && [ -f "$METRICS_FILE" ]; then
+    ARCHIVE_DIR="$REPO_ROOT/metrics-archive"
+    mkdir -p "$ARCHIVE_DIR"
+    ARCHIVE_TS=$(date +%Y%m%d-%H%M%S)
+    mv "$METRICS_FILE" "$ARCHIVE_DIR/metrics-${ARCHIVE_TS}.json"
+    [ -f "$METRICS_REPORT" ] && mv "$METRICS_REPORT" "$ARCHIVE_DIR/metrics-report-${ARCHIVE_TS}.md"
+    metric "Archived previous metrics to metrics-archive/"
+fi
+
 if [ ! -f "$METRICS_FILE" ]; then
+    # Fresh run -- create new metrics file
+    RUN_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    RUN_START_EPOCH=$(date +%s)
     cat > "$METRICS_FILE" <<INIT
 {
   "runStart": "$RUN_START",
@@ -96,10 +124,23 @@ if [ ! -f "$METRICS_FILE" ]; then
   "iterations": []
 }
 INIT
-    metric "Initialized metrics.json"
+    metric "Initialized new metrics.json"
 else
-    metric "Resuming with existing metrics.json"
+    # Resuming -- read the original runStart so total duration is calculated
+    # from the very first invocation, not from this restart
+    RUN_START=$(jq -r '.runStart' "$METRICS_FILE" 2>/dev/null)
+    # Convert the stored ISO timestamp back to epoch for duration math
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        RUN_START_EPOCH=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$RUN_START" +%s 2>/dev/null || date +%s)
+    else
+        RUN_START_EPOCH=$(date -d "$RUN_START" +%s 2>/dev/null || date +%s)
+    fi
+    PREV_ITERATIONS=$(jq '.totalIterations // 0' "$METRICS_FILE" 2>/dev/null || echo "0")
+    metric "Resuming metrics.json (original start: $RUN_START, previous iterations: $PREV_ITERATIONS)"
 fi
+
+# Compute the next iteration number (continue from where we left off)
+ITERATION_OFFSET=$(jq '.totalIterations // 0' "$METRICS_FILE" 2>/dev/null || echo "0")
 
 # Helper: record an iteration to metrics.json
 record_iteration() {
@@ -314,9 +355,12 @@ echo ""
 trap finalize_metrics EXIT
 
 for i in $(seq 1 "$MAX_ITERATIONS"); do
+    # Global iteration number (continues from previous runs)
+    GLOBAL_ITER=$((ITERATION_OFFSET + i))
+
     echo ""
     log "=========================================="
-    log "Iteration $i / $MAX_ITERATIONS"
+    log "Iteration $GLOBAL_ITER (run iteration $i / $MAX_ITERATIONS)"
     log "=========================================="
 
     ITER_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -362,14 +406,14 @@ PROMPT
 )
 
     # Run Claude -- write to file first to avoid pipefail issues
-    echo "$RALPH_PROMPT" | claude --dangerously-skip-permissions --print > "/tmp/ralph-iteration-$i.log" 2>&1 || true
-    cat "/tmp/ralph-iteration-$i.log"
+    echo "$RALPH_PROMPT" | claude --dangerously-skip-permissions --print > "/tmp/ralph-iteration-$GLOBAL_ITER.log" 2>&1 || true
+    cat "/tmp/ralph-iteration-$GLOBAL_ITER.log"
 
     ITER_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     ITER_END_EPOCH=$(date +%s)
 
     # Check if Ralph signaled completion
-    if grep -q "<promise>COMPLETE</promise>" "/tmp/ralph-iteration-$i.log" 2>/dev/null; then
+    if grep -q "<promise>COMPLETE</promise>" "/tmp/ralph-iteration-$GLOBAL_ITER.log" 2>/dev/null; then
         success "Ralph signaled all stories complete."
         exit 0
     fi
@@ -378,10 +422,10 @@ PROMPT
     COMMIT_AFTER=$(git rev-list --count HEAD 2>/dev/null || echo "0")
     if [ "$COMMIT_AFTER" = "$COMMIT_BEFORE" ]; then
         warn "No new commits from this iteration. Ralph may have encountered an issue."
-        warn "Check /tmp/ralph-iteration-$i.log for details."
+        warn "Check /tmp/ralph-iteration-$GLOBAL_ITER.log for details."
         echo "---" >> progress.txt
-        echo "Iteration $i [$(date -u +"%Y-%m-%dT%H:%M:%SZ")]: No commits produced for $STORY_TITLE (attempt $ATTEMPT). Check logs." >> progress.txt
-        record_iteration "$i" "$STORY_ID" "$STORY_TITLE" "no_commit" "" "$ITER_START" "$ITER_END" "$ITER_START_EPOCH" "$ITER_END_EPOCH" "$ATTEMPT"
+        echo "Iteration $GLOBAL_ITER [$(date -u +"%Y-%m-%dT%H:%M:%SZ")]: No commits produced for $STORY_TITLE (attempt $ATTEMPT). Check logs." >> progress.txt
+        record_iteration "$GLOBAL_ITER" "$STORY_ID" "$STORY_TITLE" "no_commit" "" "$ITER_START" "$ITER_END" "$ITER_START_EPOCH" "$ITER_END_EPOCH" "$ATTEMPT"
         continue
     fi
 
@@ -393,10 +437,10 @@ PROMPT
     if ! git push 2>&1; then
         error "git push failed. Skipping CI verification."
         echo "---" >> progress.txt
-        echo "Iteration $i [$(date -u +"%Y-%m-%dT%H:%M:%SZ")]: git push failed for $STORY_TITLE." >> progress.txt
+        echo "Iteration $GLOBAL_ITER [$(date -u +"%Y-%m-%dT%H:%M:%SZ")]: git push failed for $STORY_TITLE." >> progress.txt
         ITER_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
         ITER_END_EPOCH=$(date +%s)
-        record_iteration "$i" "$STORY_ID" "$STORY_TITLE" "push_fail" "" "$ITER_START" "$ITER_END" "$ITER_START_EPOCH" "$ITER_END_EPOCH" "$ATTEMPT"
+        record_iteration "$GLOBAL_ITER" "$STORY_ID" "$STORY_TITLE" "push_fail" "" "$ITER_START" "$ITER_END" "$ITER_START_EPOCH" "$ITER_END_EPOCH" "$ATTEMPT"
         continue
     fi
 
@@ -425,12 +469,12 @@ PROMPT
         # For early stories (before CI exists), mark complete directly
         jq "(.userStories[] | select(.id == \"$STORY_ID\")).status = \"completed\"" prd.json > prd.json.tmp && mv prd.json.tmp prd.json 2>/dev/null || true
         echo "---" >> progress.txt
-        echo "Iteration $i [$(date -u +"%Y-%m-%dT%H:%M:%SZ")]: $STORY_TITLE completed (no CI workflow found -- pre-CI story). Attempt $ATTEMPT." >> progress.txt
+        echo "Iteration $GLOBAL_ITER [$(date -u +"%Y-%m-%dT%H:%M:%SZ")]: $STORY_TITLE completed (no CI workflow found -- pre-CI story). Attempt $ATTEMPT." >> progress.txt
         git add prd.json progress.txt && git commit -m "Mark $STORY_ID complete (pre-CI)" && git push 2>/dev/null || true
 
         ITER_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
         ITER_END_EPOCH=$(date +%s)
-        record_iteration "$i" "$STORY_ID" "$STORY_TITLE" "ci_skipped" "" "$ITER_START" "$ITER_END" "$ITER_START_EPOCH" "$ITER_END_EPOCH" "$ATTEMPT"
+        record_iteration "$GLOBAL_ITER" "$STORY_ID" "$STORY_TITLE" "ci_skipped" "" "$ITER_START" "$ITER_END" "$ITER_START_EPOCH" "$ITER_END_EPOCH" "$ATTEMPT"
         continue
     fi
 
@@ -441,8 +485,8 @@ PROMPT
     # NOTE: --exit-status returns non-zero on CI failure. With set -eo pipefail,
     # we must avoid the pipe failing the script. Write output to a temp file
     # instead of piping, then check conclusion via API.
-    gh run watch "$RUN_ID" 2>&1 > "/tmp/ralph-ci-watch-$i.log" || true
-    tail -20 "/tmp/ralph-ci-watch-$i.log"
+    gh run watch "$RUN_ID" 2>&1 > "/tmp/ralph-ci-watch-$GLOBAL_ITER.log" || true
+    tail -20 "/tmp/ralph-ci-watch-$GLOBAL_ITER.log"
 
     # Check the actual CI conclusion via the API (reliable regardless of exit code)
     CI_CONCLUSION=$(gh run view "$RUN_ID" --json conclusion --jq '.conclusion' 2>/dev/null || echo "unknown")
@@ -457,7 +501,7 @@ PROMPT
     ITER_END_EPOCH=$(date +%s)
 
     if [ $CI_STATUS -eq 0 ]; then
-        success "CI PASSED for iteration $i (attempt $ATTEMPT of $STORY_TITLE)"
+        success "CI PASSED for iteration $GLOBAL_ITER (attempt $ATTEMPT of $STORY_TITLE)"
 
         # Mark the story as completed in prd.json
         jq "(.userStories[] | select(.id == \"$STORY_ID\")).status = \"completed\"" prd.json > prd.json.tmp && mv prd.json.tmp prd.json
@@ -465,13 +509,13 @@ PROMPT
         success "Marked story '$STORY_ID' as completed"
 
         echo "---" >> progress.txt
-        echo "Iteration $i [$(date -u +"%Y-%m-%dT%H:%M:%SZ")]: $STORY_TITLE COMPLETED. CI passed (run $RUN_ID). Attempt $ATTEMPT." >> progress.txt
+        echo "Iteration $GLOBAL_ITER [$(date -u +"%Y-%m-%dT%H:%M:%SZ")]: $STORY_TITLE COMPLETED. CI passed (run $RUN_ID). Attempt $ATTEMPT." >> progress.txt
         git add prd.json progress.txt metrics.json && git commit -m "Mark $STORY_ID complete (CI verified: run $RUN_ID, attempt $ATTEMPT)" && git push 2>/dev/null || true
 
-        record_iteration "$i" "$STORY_ID" "$STORY_TITLE" "ci_pass" "$RUN_ID" "$ITER_START" "$ITER_END" "$ITER_START_EPOCH" "$ITER_END_EPOCH" "$ATTEMPT"
+        record_iteration "$GLOBAL_ITER" "$STORY_ID" "$STORY_TITLE" "ci_pass" "$RUN_ID" "$ITER_START" "$ITER_END" "$ITER_START_EPOCH" "$ITER_END_EPOCH" "$ATTEMPT"
 
     else
-        error "CI FAILED for iteration $i (attempt $ATTEMPT of $STORY_TITLE, run $RUN_ID)"
+        error "CI FAILED for iteration $GLOBAL_ITER (attempt $ATTEMPT of $STORY_TITLE, run $RUN_ID)"
 
         # Fetch CI failure logs and save to progress.txt for the next iteration
         log "Fetching failure logs..."
@@ -479,7 +523,7 @@ PROMPT
 
         {
             echo "---"
-            echo "Iteration $i [$(date -u +"%Y-%m-%dT%H:%M:%SZ")]: $STORY_TITLE CI FAILED (run $RUN_ID, attempt $ATTEMPT)."
+            echo "Iteration $GLOBAL_ITER [$(date -u +"%Y-%m-%dT%H:%M:%SZ")]: $STORY_TITLE CI FAILED (run $RUN_ID, attempt $ATTEMPT)."
             echo "Story NOT marked complete. The next iteration should debug this failure."
             echo ""
             echo "CI failure logs (last 100 lines):"
@@ -493,7 +537,7 @@ PROMPT
 
         git add progress.txt metrics.json && git commit -m "CI failed: $STORY_ID (run $RUN_ID, attempt $ATTEMPT)" && git push 2>/dev/null || true
 
-        record_iteration "$i" "$STORY_ID" "$STORY_TITLE" "ci_fail" "$RUN_ID" "$ITER_START" "$ITER_END" "$ITER_START_EPOCH" "$ITER_END_EPOCH" "$ATTEMPT"
+        record_iteration "$GLOBAL_ITER" "$STORY_ID" "$STORY_TITLE" "ci_fail" "$RUN_ID" "$ITER_START" "$ITER_END" "$ITER_START_EPOCH" "$ITER_END_EPOCH" "$ATTEMPT"
     fi
 
     # Brief pause between iterations
