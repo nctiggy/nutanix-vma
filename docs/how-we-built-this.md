@@ -392,8 +392,10 @@ Ralph started at **9:33 PM PDT** (2026-03-19) and the last story code was commit
 | US-017/018/019 code committed before crash | 4:06 AM - 4:40 AM | +6h 25m - 6h 59m |
 | Manual fix: `ralph-ci.sh` pipefail bug patched | 6:22 AM | +8h 41m |
 | US-016 integration test flakiness fixed, marked complete | 7:04 AM | +9h 23m |
-| **All 23 stories implemented** | **4:40 AM** | **~7h coding** |
-| **All CI verified** | **7:04 AM** | **~9.5h total** |
+| **All 23 stories implemented** | **4:40 AM** | **~7h wall clock** |
+| **All CI verified** | **7:04 AM** | **~9.5h wall clock** |
+
+**Important**: The wall clock times above include human gaps (waiting for Craig to diagnose `ralph-ci.sh` crashes and restart the loop). See the timing breakdown below for actual Claude execution time.
 
 ### Overall Stats
 
@@ -408,10 +410,27 @@ Ralph started at **9:33 PM PDT** (2026-03-19) and the last story code was commit
 | CI verification commits | 21 |
 | Bug fix / debug commits | 8 |
 | Progress.txt update commits | 12 |
-| Wall clock: PRD design | ~4 hours |
-| Wall clock: Ralph coding | ~7 hours |
-| Wall clock: including CI waits + script fixes | ~9.5 hours |
+| **Claude execution time (coding only)** | **~4h 15m** |
+| Claude time in CI wait | ~42m (21 runs x ~2m avg) |
+| Claude time in failed/no-commit iterations | ~1h 46m |
+| Total Claude active time (coding + CI wait) | ~6h 55m (from `metrics.json`) |
+| Human gap time (diagnosing crashes, restarting) | ~2h |
+| Wall clock: first commit to last code commit | ~7h |
+| Wall clock: including final CI verification | ~9.5h |
 | `ralph-ci.sh` crashes | 2 (both `set -eo pipefail` issues) |
+
+**Timing breakdown** (execution phase only, excludes PRD design):
+
+```
+Total wall clock:        ~9.5 hours
+├── Claude coding:       ~4h 15m   (actual story implementation)
+├── CI pipeline waits:   ~42m      (GitHub Actions lint+build+test)
+├── Failed iterations:   ~1h 46m   (3 no-commit + retry attempts)
+├── Human gaps:          ~2h       (diagnosing ralph-ci.sh bugs, restarting)
+└── Final CI tail:       ~45m      (last CI runs verifying US-016 fix)
+```
+
+The **Claude coding time** (~4h 15m) represents the time Claude was actually writing code and tests for stories that passed. This excludes CI wait time, failed iterations, and human gaps. It's the "if everything worked perfectly the first time" number.
 
 ### Code Output
 
