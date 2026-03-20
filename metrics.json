@@ -4,11 +4,11 @@
   "totalDurationSeconds": 1825,
   "totalDurationHuman": "30m 25s",
   "maxIterations": 30,
-  "totalIterations": 10,
-  "storiesCompleted": 10,
+  "totalIterations": 11,
+  "storiesCompleted": 11,
   "storiesRemaining": 20,
-  "totalCIRuns": 10,
-  "ciPasses": 10,
+  "totalCIRuns": 11,
+  "ciPasses": 11,
   "ciFails": 0,
   "ciSkipped": 0,
   "noCommitIterations": 0,
@@ -132,6 +132,18 @@
       "endTime": "2026-03-20T06:38:06Z",
       "durationSeconds": 962,
       "durationHuman": "16m 2s",
+      "attemptNumber": 1
+    },
+    {
+      "iteration": 8,
+      "storyId": "US-009",
+      "storyTitle": "VM Builder -- Metadata Translation",
+      "result": "ci_pass",
+      "ciRunId": "23332359865",
+      "startTime": "2026-03-20T06:38:09Z",
+      "endTime": "2026-03-20T06:55:51Z",
+      "durationSeconds": 1062,
+      "durationHuman": "17m 42s",
       "attemptNumber": 1
     }
   ]
