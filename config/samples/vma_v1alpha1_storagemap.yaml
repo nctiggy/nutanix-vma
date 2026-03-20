@@ -1,0 +1,22 @@
+apiVersion: vma.nutanix.io/v1alpha1
+kind: StorageMap
+metadata:
+  name: storagemap-sample
+  namespace: default
+spec:
+  providerRef:
+    name: nutanixprovider-sample
+  map:
+    - source:
+        id: "f1e2d3c4-b5a6-7890-fedc-ba0987654321"
+        name: "default-container"
+      destination:
+        storageClass: ceph-rbd
+        volumeMode: Block
+        accessMode: ReadWriteMany
+    - source:
+        name: "ssd-container"
+      destination:
+        storageClass: local-path
+        volumeMode: Filesystem
+        accessMode: ReadWriteOnce

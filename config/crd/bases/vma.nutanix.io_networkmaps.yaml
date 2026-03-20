@@ -1,0 +1,108 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: networkmaps.vma.nutanix.io
+spec:
+  group: vma.nutanix.io
+  names:
+    kind: NetworkMap
+    listKind: NetworkMapList
+    plural: networkmaps
+    singular: networkmap
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: NetworkMap is the Schema for the networkmaps API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: NetworkMapSpec defines the desired state of NetworkMap.
+            properties:
+              map:
+                description: Map is the list of network mappings from Nutanix subnets
+                  to KubeVirt networks.
+                items:
+                  description: NetworkPair maps a Nutanix subnet to a KubeVirt network.
+                  properties:
+                    destination:
+                      description: Destination is the KubeVirt network target.
+                      properties:
+                        name:
+                          description: |-
+                            Name is the name of the Multus NetworkAttachmentDefinition.
+                            Required when Type is "multus".
+                          type: string
+                        namespace:
+                          description: |-
+                            Namespace is the namespace of the Multus NetworkAttachmentDefinition.
+                            Defaults to the migration target namespace if not specified.
+                          type: string
+                        type:
+                          description: 'Type is the network type: "pod" for the default
+                            pod network, "multus" for a Multus NAD.'
+                          enum:
+                          - pod
+                          - multus
+                          type: string
+                      required:
+                      - type
+                      type: object
+                    source:
+                      description: Source is the Nutanix subnet.
+                      properties:
+                        id:
+                          description: ID is the UUID of the Nutanix subnet.
+                          type: string
+                        name:
+                          description: Name is the name of the Nutanix subnet.
+                          type: string
+                      type: object
+                  required:
+                  - destination
+                  - source
+                  type: object
+                minItems: 1
+                type: array
+              providerRef:
+                description: ProviderRef references the NutanixProvider this map applies
+                  to.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+            required:
+            - map
+            - providerRef
+            type: object
+        type: object
+    served: true
+    storage: true

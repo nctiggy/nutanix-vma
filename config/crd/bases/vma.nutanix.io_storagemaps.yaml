@@ -1,0 +1,115 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: storagemaps.vma.nutanix.io
+spec:
+  group: vma.nutanix.io
+  names:
+    kind: StorageMap
+    listKind: StorageMapList
+    plural: storagemaps
+    singular: storagemap
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: StorageMap is the Schema for the storagemaps API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: StorageMapSpec defines the desired state of StorageMap.
+            properties:
+              map:
+                description: Map is the list of storage mappings from Nutanix containers
+                  to Kubernetes StorageClasses.
+                items:
+                  description: StoragePair maps a Nutanix storage container to a Kubernetes
+                    StorageClass.
+                  properties:
+                    destination:
+                      description: Destination is the KubeVirt storage target.
+                      properties:
+                        accessMode:
+                          default: ReadWriteOnce
+                          description: |-
+                            AccessMode specifies the access mode for the PVC.
+                            Defaults to ReadWriteOnce.
+                          enum:
+                          - ReadWriteOnce
+                          - ReadWriteMany
+                          - ReadOnlyMany
+                          type: string
+                        storageClass:
+                          description: StorageClass is the Kubernetes StorageClass
+                            to use for the PVC.
+                          type: string
+                        volumeMode:
+                          default: Filesystem
+                          description: |-
+                            VolumeMode specifies whether the PVC should be Filesystem or Block.
+                            Defaults to Filesystem.
+                          enum:
+                          - Filesystem
+                          - Block
+                          type: string
+                      required:
+                      - storageClass
+                      type: object
+                    source:
+                      description: Source is the Nutanix storage container.
+                      properties:
+                        id:
+                          description: ID is the UUID of the Nutanix storage container.
+                          type: string
+                        name:
+                          description: Name is the name of the Nutanix storage container.
+                          type: string
+                      type: object
+                  required:
+                  - destination
+                  - source
+                  type: object
+                minItems: 1
+                type: array
+              providerRef:
+                description: ProviderRef references the NutanixProvider this map applies
+                  to.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+            required:
+            - map
+            - providerRef
+            type: object
+        type: object
+    served: true
+    storage: true

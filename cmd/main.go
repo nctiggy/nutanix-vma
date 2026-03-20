@@ -29,6 +29,7 @@ import (
 	_ "kubevirt.io/api/core/v1"
 	_ "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 
+	vmav1alpha1 "github.com/nctiggy/nutanix-vma/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -48,7 +49,7 @@ var (
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-
+	utilruntime.Must(vmav1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 

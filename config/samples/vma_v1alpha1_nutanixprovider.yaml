@@ -1,0 +1,21 @@
+apiVersion: vma.nutanix.io/v1alpha1
+kind: NutanixProvider
+metadata:
+  name: nutanixprovider-sample
+  namespace: default
+spec:
+  url: "https://prism.example.com:9440"
+  secretRef:
+    name: nutanix-credentials
+  refreshInterval: "5m"
+  insecureSkipVerify: false
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: nutanix-credentials
+  namespace: default
+type: Opaque
+stringData:
+  username: admin
+  password: changeme
