@@ -4,11 +4,11 @@
   "totalDurationSeconds": 1825,
   "totalDurationHuman": "30m 25s",
   "maxIterations": 30,
-  "totalIterations": 12,
-  "storiesCompleted": 12,
+  "totalIterations": 13,
+  "storiesCompleted": 13,
   "storiesRemaining": 20,
-  "totalCIRuns": 12,
-  "ciPasses": 12,
+  "totalCIRuns": 13,
+  "ciPasses": 13,
   "ciFails": 0,
   "ciSkipped": 0,
   "noCommitIterations": 0,
@@ -156,6 +156,18 @@
       "endTime": "2026-03-20T07:14:09Z",
       "durationSeconds": 1094,
       "durationHuman": "18m 14s",
+      "attemptNumber": 1
+    },
+    {
+      "iteration": 10,
+      "storyId": "US-011",
+      "storyTitle": "Integration Test Harness + Provider Controller",
+      "result": "ci_pass",
+      "ciRunId": "23333431957",
+      "startTime": "2026-03-20T07:14:12Z",
+      "endTime": "2026-03-20T07:37:57Z",
+      "durationSeconds": 1425,
+      "durationHuman": "23m 45s",
       "attemptNumber": 1
     }
   ]
