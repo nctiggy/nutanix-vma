@@ -17,7 +17,11 @@ limitations under the License.
 package mock
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"io"
+	"net/http"
 	"testing"
 
 	"github.com/nctiggy/nutanix-vma/internal/nutanix"
@@ -577,5 +581,776 @@ func TestStore_TaskLifecycle(t *testing.T) {
 	task = store.GetTask("nonexistent")
 	if task != nil {
 		t.Error("expected nil for nonexistent task")
+	}
+}
+
+// --- Recovery Point (Snapshot) Tests ---
+
+func TestCreateRecoveryPoint(t *testing.T) {
+	client, srv := newTestClient(t)
+	defer srv.Close()
+
+	rpUUID, err := client.CreateRecoveryPoint(context.Background(), testVMUUID1, "test-snapshot")
+	if err != nil {
+		t.Fatalf("CreateRecoveryPoint failed: %v", err)
+	}
+
+	if rpUUID == "" {
+		t.Fatal("expected non-empty recovery point UUID")
+	}
+
+	// Verify recovery point exists in store
+	rp := srv.Store.GetRecoveryPoint(rpUUID)
+	if rp == nil {
+		t.Fatal("expected recovery point to exist in store")
+	}
+	if rp.Name != "test-snapshot" {
+		t.Errorf("expected name test-snapshot, got %s", rp.Name)
+	}
+	if rp.VMExtID != testVMUUID1 {
+		t.Errorf("expected VM ext ID %s, got %s", testVMUUID1, rp.VMExtID)
+	}
+	if rp.Status != recoveryPointStatusComplete {
+		t.Errorf("expected status COMPLETE, got %s", rp.Status)
+	}
+}
+
+func TestGetRecoveryPoint(t *testing.T) {
+	client, srv := newTestClient(t)
+	defer srv.Close()
+
+	// Create a RP first
+	rpUUID, err := client.CreateRecoveryPoint(context.Background(), testVMUUID1, "get-test-rp")
+	if err != nil {
+		t.Fatalf("CreateRecoveryPoint failed: %v", err)
+	}
+
+	rp, err := client.GetRecoveryPoint(context.Background(), rpUUID)
+	if err != nil {
+		t.Fatalf("GetRecoveryPoint failed: %v", err)
+	}
+
+	if rp.ExtID != rpUUID {
+		t.Errorf("expected ExtID %s, got %s", rpUUID, rp.ExtID)
+	}
+	if rp.Name != "get-test-rp" {
+		t.Errorf("expected name get-test-rp, got %s", rp.Name)
+	}
+}
+
+func TestGetRecoveryPoint_NotFound(t *testing.T) {
+	client, srv := newTestClient(t)
+	defer srv.Close()
+
+	_, err := client.GetRecoveryPoint(context.Background(), "nonexistent-rp")
+	if err == nil {
+		t.Fatal("expected error for nonexistent recovery point")
+	}
+}
+
+func TestDeleteRecoveryPoint(t *testing.T) {
+	client, srv := newTestClient(t)
+	defer srv.Close()
+
+	rpUUID, err := client.CreateRecoveryPoint(context.Background(), testVMUUID1, "delete-test-rp")
+	if err != nil {
+		t.Fatalf("CreateRecoveryPoint failed: %v", err)
+	}
+
+	err = client.DeleteRecoveryPoint(context.Background(), rpUUID)
+	if err != nil {
+		t.Fatalf("DeleteRecoveryPoint failed: %v", err)
+	}
+
+	// Verify it's gone
+	rp := srv.Store.GetRecoveryPoint(rpUUID)
+	if rp != nil {
+		t.Error("expected recovery point to be deleted from store")
+	}
+}
+
+func TestDeleteRecoveryPoint_NotFound(t *testing.T) {
+	client, srv := newTestClient(t)
+	defer srv.Close()
+
+	err := client.DeleteRecoveryPoint(context.Background(), "nonexistent-rp")
+	if err == nil {
+		t.Fatal("expected error for deleting nonexistent recovery point")
+	}
+}
+
+func TestCloneVMFromRecoveryPoint(t *testing.T) {
+	client, srv := newTestClient(t)
+	defer srv.Close()
+
+	rpUUID, err := client.CreateRecoveryPoint(context.Background(), testVMUUID1, "clone-test-rp")
+	if err != nil {
+		t.Fatalf("CreateRecoveryPoint failed: %v", err)
+	}
+
+	cloneUUID, err := client.CloneVMFromRecoveryPoint(context.Background(), rpUUID, "my-clone")
+	if err != nil {
+		t.Fatalf("CloneVMFromRecoveryPoint failed: %v", err)
+	}
+
+	if cloneUUID == "" {
+		t.Fatal("expected non-empty cloned VM UUID")
+	}
+
+	// Verify cloned VM exists
+	vm, err := client.GetVM(context.Background(), cloneUUID)
+	if err != nil {
+		t.Fatalf("GetVM for clone failed: %v", err)
+	}
+	if vm.Name != "my-clone" {
+		t.Errorf("expected clone name my-clone, got %s", vm.Name)
+	}
+	if vm.PowerState != powerStateOFF {
+		t.Errorf("expected clone power state OFF, got %s", vm.PowerState)
+	}
+}
+
+func TestCloneVMFromRecoveryPoint_NotFound(t *testing.T) {
+	client, srv := newTestClient(t)
+	defer srv.Close()
+
+	_, err := client.CloneVMFromRecoveryPoint(context.Background(), "nonexistent-rp", "clone")
+	if err == nil {
+		t.Fatal("expected error for cloning from nonexistent recovery point")
+	}
+}
+
+// --- Image Tests ---
+
+func TestCreateImageFromDisk(t *testing.T) {
+	client, srv := newTestClient(t)
+	defer srv.Close()
+
+	imgUUID, err := client.CreateImageFromDisk(
+		context.Background(),
+		"test-image",
+		"vdisk-001",
+		"cluster-uuid-001",
+	)
+	if err != nil {
+		t.Fatalf("CreateImageFromDisk failed: %v", err)
+	}
+
+	if imgUUID == "" {
+		t.Fatal("expected non-empty image UUID")
+	}
+
+	// Verify image exists in store
+	img := srv.Store.GetImage(imgUUID)
+	if img == nil {
+		t.Fatal("expected image to exist in store")
+	}
+	if img.Name != "test-image" {
+		t.Errorf("expected name test-image, got %s", img.Name)
+	}
+}
+
+func TestGetImage(t *testing.T) {
+	client, srv := newTestClient(t)
+	defer srv.Close()
+
+	imgUUID, err := client.CreateImageFromDisk(
+		context.Background(),
+		"get-test-img",
+		"vdisk-001",
+		"cluster-uuid-001",
+	)
+	if err != nil {
+		t.Fatalf("CreateImageFromDisk failed: %v", err)
+	}
+
+	img, err := client.GetImage(context.Background(), imgUUID)
+	if err != nil {
+		t.Fatalf("GetImage failed: %v", err)
+	}
+
+	if img.ExtID != imgUUID {
+		t.Errorf("expected ExtID %s, got %s", imgUUID, img.ExtID)
+	}
+	if img.Name != "get-test-img" {
+		t.Errorf("expected name get-test-img, got %s", img.Name)
+	}
+}
+
+func TestGetImage_NotFound(t *testing.T) {
+	client, srv := newTestClient(t)
+	defer srv.Close()
+
+	_, err := client.GetImage(context.Background(), "nonexistent-img")
+	if err == nil {
+		t.Fatal("expected error for nonexistent image")
+	}
+}
+
+func TestDownloadImage(t *testing.T) {
+	client, srv := newTestClient(t)
+	defer srv.Close()
+
+	imgUUID, err := client.CreateImageFromDisk(
+		context.Background(),
+		"download-test-img",
+		"vdisk-001",
+		"cluster-uuid-001",
+	)
+	if err != nil {
+		t.Fatalf("CreateImageFromDisk failed: %v", err)
+	}
+
+	var buf bytes.Buffer
+	err = client.DownloadImage(context.Background(), imgUUID, &buf)
+	if err != nil {
+		t.Fatalf("DownloadImage failed: %v", err)
+	}
+
+	if int64(buf.Len()) != defaultImageSize {
+		t.Errorf("expected %d bytes, got %d", defaultImageSize, buf.Len())
+	}
+
+	// Verify all bytes are 0xAA
+	for i, b := range buf.Bytes() {
+		if b != 0xAA {
+			t.Errorf("expected byte 0xAA at offset %d, got 0x%02X", i, b)
+			break
+		}
+	}
+}
+
+func TestDownloadImage_NotFound(t *testing.T) {
+	client, srv := newTestClient(t)
+	defer srv.Close()
+
+	var buf bytes.Buffer
+	err := client.DownloadImage(context.Background(), "nonexistent-img", &buf)
+	if err == nil {
+		t.Fatal("expected error for downloading nonexistent image")
+	}
+}
+
+func TestDownloadImage_RangeHeader(t *testing.T) {
+	srv := NewServer(WithFixtures())
+	defer srv.Close()
+
+	// Add a known image to the store
+	imgUUID := srv.Store.AddImage(&nutanix.Image{
+		Name:      "range-test-img",
+		Type:      "DISK_IMAGE",
+		SizeBytes: 1024,
+	})
+
+	// Make a raw HTTP request with Range header
+	url := fmt.Sprintf("%s/api/vmm/v4.0/images/%s/file", srv.URL(), imgUUID)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.SetBasicAuth("admin", "password")
+	req.Header.Set("Range", "bytes=0-99")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusPartialContent {
+		t.Fatalf("expected 206 Partial Content, got %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response: %v", err)
+	}
+
+	if len(body) != 100 {
+		t.Errorf("expected 100 bytes, got %d", len(body))
+	}
+
+	// Verify Content-Range header
+	contentRange := resp.Header.Get("Content-Range")
+	if contentRange != "bytes 0-99/1024" {
+		t.Errorf("expected Content-Range 'bytes 0-99/1024', got '%s'", contentRange)
+	}
+}
+
+func TestDownloadImage_SuffixRange(t *testing.T) {
+	srv := NewServer(WithFixtures())
+	defer srv.Close()
+
+	imgUUID := srv.Store.AddImage(&nutanix.Image{
+		Name:      "suffix-range-img",
+		Type:      "DISK_IMAGE",
+		SizeBytes: 1024,
+	})
+
+	url := fmt.Sprintf("%s/api/vmm/v4.0/images/%s/file", srv.URL(), imgUUID)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.SetBasicAuth("admin", "password")
+	req.Header.Set("Range", "bytes=-256")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusPartialContent {
+		t.Fatalf("expected 206 Partial Content, got %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response: %v", err)
+	}
+
+	if len(body) != 256 {
+		t.Errorf("expected 256 bytes for suffix range, got %d", len(body))
+	}
+}
+
+func TestDeleteImage(t *testing.T) {
+	client, srv := newTestClient(t)
+	defer srv.Close()
+
+	imgUUID, err := client.CreateImageFromDisk(
+		context.Background(),
+		"delete-test-img",
+		"vdisk-001",
+		"cluster-uuid-001",
+	)
+	if err != nil {
+		t.Fatalf("CreateImageFromDisk failed: %v", err)
+	}
+
+	err = client.DeleteImage(context.Background(), imgUUID)
+	if err != nil {
+		t.Fatalf("DeleteImage failed: %v", err)
+	}
+
+	// Verify it's gone
+	img := srv.Store.GetImage(imgUUID)
+	if img != nil {
+		t.Error("expected image to be deleted from store")
+	}
+}
+
+func TestDeleteImage_NotFound(t *testing.T) {
+	client, srv := newTestClient(t)
+	defer srv.Close()
+
+	err := client.DeleteImage(context.Background(), "nonexistent-img")
+	if err == nil {
+		t.Fatal("expected error for deleting nonexistent image")
+	}
+}
+
+// --- CBT Tests ---
+
+func newCBTTestClient(t *testing.T) (nutanix.NutanixClient, *Server) {
+	t.Helper()
+	srv := NewServer(WithFixtures(), WithCBTConfig(DefaultCBTConfig()))
+	client, err := nutanix.NewClient(nutanix.ClientConfig{
+		Host:     srv.URL(),
+		Username: "admin",
+		Password: "password",
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	return client, srv
+}
+
+func TestCBTDiscoverCluster(t *testing.T) {
+	client, srv := newCBTTestClient(t)
+	defer srv.Close()
+
+	info, err := client.DiscoverClusterForCBT(context.Background(), testVMUUID1)
+	if err != nil {
+		t.Fatalf("DiscoverClusterForCBT failed: %v", err)
+	}
+
+	if info.PrismElementURL == "" {
+		t.Error("expected non-empty PE URL")
+	}
+	if info.JWTToken != "mock-jwt-token-for-cbt" {
+		t.Errorf("expected mock JWT token, got %s", info.JWTToken)
+	}
+	// PE URL should point to the same mock server
+	if info.PrismElementURL != srv.URL() {
+		t.Errorf("expected PE URL %s, got %s", srv.URL(), info.PrismElementURL)
+	}
+}
+
+func TestCBTChangedRegions_SinglePage(t *testing.T) {
+	client, srv := newCBTTestClient(t)
+	defer srv.Close()
+
+	// Discover first to cache the token
+	info, err := client.DiscoverClusterForCBT(context.Background(), testVMUUID1)
+	if err != nil {
+		t.Fatalf("DiscoverClusterForCBT failed: %v", err)
+	}
+
+	regions, err := client.GetChangedRegions(
+		context.Background(),
+		info.PrismElementURL,
+		info.JWTToken,
+		testVMUUID1,
+		"snap-uuid-1",
+		"snap-uuid-0",
+		0,
+		1048576,
+		65536,
+	)
+	if err != nil {
+		t.Fatalf("GetChangedRegions failed: %v", err)
+	}
+
+	// Default CBT config has 3 regions, page size is 3, so all fit in one page
+	if len(regions.Regions) != 3 {
+		t.Fatalf("expected 3 regions, got %d", len(regions.Regions))
+	}
+	if regions.NextOffset != nil {
+		t.Error("expected nil NextOffset for single page")
+	}
+
+	// Verify first region
+	if regions.Regions[0].Offset != 0 || regions.Regions[0].Length != 65536 {
+		t.Errorf("unexpected first region: offset=%d length=%d",
+			regions.Regions[0].Offset, regions.Regions[0].Length)
+	}
+}
+
+func TestCBTChangedRegions_Paginated(t *testing.T) {
+	// Use more regions than cbtPageSize (3) to test pagination
+	manyRegions := []nutanix.ChangedRegion{
+		{Offset: 0, Length: 4096},
+		{Offset: 8192, Length: 4096},
+		{Offset: 16384, Length: 4096},
+		{Offset: 24576, Length: 4096},
+		{Offset: 32768, Length: 4096},
+	}
+
+	srv := NewServer(
+		WithFixtures(),
+		WithCBTConfig(CBTConfig{
+			ChangedRegions: manyRegions,
+			JWTToken:       "paginated-jwt",
+		}),
+	)
+	defer srv.Close()
+
+	client, err := nutanix.NewClient(nutanix.ClientConfig{
+		Host:     srv.URL(),
+		Username: "admin",
+		Password: "password",
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	info, err := client.DiscoverClusterForCBT(context.Background(), testVMUUID1)
+	if err != nil {
+		t.Fatalf("DiscoverClusterForCBT failed: %v", err)
+	}
+
+	// First page: offset=0, should return 3 regions with nextOffset
+	regions, err := client.GetChangedRegions(
+		context.Background(),
+		info.PrismElementURL,
+		info.JWTToken,
+		testVMUUID1,
+		"snap-1",
+		"snap-0",
+		0,
+		65536,
+		4096,
+	)
+	if err != nil {
+		t.Fatalf("GetChangedRegions page 1 failed: %v", err)
+	}
+	if len(regions.Regions) != 3 {
+		t.Fatalf("expected 3 regions in page 1, got %d", len(regions.Regions))
+	}
+	if regions.NextOffset == nil {
+		t.Fatal("expected non-nil NextOffset for page 1")
+	}
+	if *regions.NextOffset != 3 {
+		t.Errorf("expected NextOffset 3, got %d", *regions.NextOffset)
+	}
+
+	// Second page: offset=3, should return 2 regions with nil nextOffset
+	regions, err = client.GetChangedRegions(
+		context.Background(),
+		info.PrismElementURL,
+		info.JWTToken,
+		testVMUUID1,
+		"snap-1",
+		"snap-0",
+		*regions.NextOffset,
+		65536,
+		4096,
+	)
+	if err != nil {
+		t.Fatalf("GetChangedRegions page 2 failed: %v", err)
+	}
+	if len(regions.Regions) != 2 {
+		t.Fatalf("expected 2 regions in page 2, got %d", len(regions.Regions))
+	}
+	if regions.NextOffset != nil {
+		t.Error("expected nil NextOffset for last page")
+	}
+}
+
+func TestCBTChangedRegions_ZeroRegions(t *testing.T) {
+	srv := NewServer(
+		WithFixtures(),
+		WithCBTConfig(CBTConfig{
+			ChangedRegions: []nutanix.ChangedRegion{},
+			JWTToken:       "zero-jwt",
+		}),
+	)
+	defer srv.Close()
+
+	client, err := nutanix.NewClient(nutanix.ClientConfig{
+		Host:     srv.URL(),
+		Username: "admin",
+		Password: "password",
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	info, err := client.DiscoverClusterForCBT(context.Background(), testVMUUID1)
+	if err != nil {
+		t.Fatalf("DiscoverClusterForCBT failed: %v", err)
+	}
+
+	regions, err := client.GetChangedRegions(
+		context.Background(),
+		info.PrismElementURL,
+		info.JWTToken,
+		testVMUUID1,
+		"snap-1",
+		"snap-0",
+		0,
+		65536,
+		4096,
+	)
+	if err != nil {
+		t.Fatalf("GetChangedRegions failed: %v", err)
+	}
+
+	if len(regions.Regions) != 0 {
+		t.Errorf("expected 0 regions, got %d", len(regions.Regions))
+	}
+	if regions.NextOffset != nil {
+		t.Error("expected nil NextOffset for zero regions")
+	}
+}
+
+func TestCBTChangedRegions_InvalidJWT(t *testing.T) {
+	srv := NewServer(
+		WithFixtures(),
+		WithCBTConfig(DefaultCBTConfig()),
+	)
+	defer srv.Close()
+
+	// Make raw HTTP request with wrong JWT cookie
+	url := fmt.Sprintf(
+		"%s/api/storage/v4.0/config/changed-regions"+
+			"?vmExtId=%s&snapshotExtId=s1&baseSnapshotExtId=s0"+
+			"&offset=0&length=65536&blockSize=4096",
+		srv.URL(), testVMUUID1)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.AddCookie(&http.Cookie{Name: nutanix.CBTJWTCookieName, Value: "wrong-token"})
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401 for invalid JWT, got %d", resp.StatusCode)
+	}
+}
+
+func TestCBTChangedRegions_MissingJWT(t *testing.T) {
+	srv := NewServer(
+		WithFixtures(),
+		WithCBTConfig(DefaultCBTConfig()),
+	)
+	defer srv.Close()
+
+	// Make raw HTTP request without JWT cookie
+	url := fmt.Sprintf("%s/api/storage/v4.0/config/changed-regions?vmExtId=%s", srv.URL(), testVMUUID1)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401 for missing JWT, got %d", resp.StatusCode)
+	}
+}
+
+// --- Full Snapshot -> Image -> Download Flow Test ---
+
+func TestFullSnapshotImageFlow(t *testing.T) {
+	client, srv := newTestClient(t)
+	defer srv.Close()
+
+	// 1. Create recovery point
+	rpUUID, err := client.CreateRecoveryPoint(context.Background(), testVMUUID1, "full-flow-rp")
+	if err != nil {
+		t.Fatalf("step 1 CreateRecoveryPoint failed: %v", err)
+	}
+
+	// 2. Get recovery point
+	rp, err := client.GetRecoveryPoint(context.Background(), rpUUID)
+	if err != nil {
+		t.Fatalf("step 2 GetRecoveryPoint failed: %v", err)
+	}
+	if rp.Status != recoveryPointStatusComplete {
+		t.Errorf("expected RP status COMPLETE, got %s", rp.Status)
+	}
+
+	// 3. Create image from disk
+	imgUUID, err := client.CreateImageFromDisk(
+		context.Background(),
+		"full-flow-img",
+		"vdisk-001",
+		"cluster-uuid-001",
+	)
+	if err != nil {
+		t.Fatalf("step 3 CreateImageFromDisk failed: %v", err)
+	}
+
+	// 4. Download image
+	var buf bytes.Buffer
+	err = client.DownloadImage(context.Background(), imgUUID, &buf)
+	if err != nil {
+		t.Fatalf("step 4 DownloadImage failed: %v", err)
+	}
+	if buf.Len() == 0 {
+		t.Error("expected non-empty image download")
+	}
+
+	// 5. Delete image
+	err = client.DeleteImage(context.Background(), imgUUID)
+	if err != nil {
+		t.Fatalf("step 5 DeleteImage failed: %v", err)
+	}
+
+	// 6. Delete recovery point
+	err = client.DeleteRecoveryPoint(context.Background(), rpUUID)
+	if err != nil {
+		t.Fatalf("step 6 DeleteRecoveryPoint failed: %v", err)
+	}
+
+	// Verify cleanup
+	if srv.Store.GetRecoveryPoint(rpUUID) != nil {
+		t.Error("recovery point should be deleted")
+	}
+	if srv.Store.GetImage(imgUUID) != nil {
+		t.Error("image should be deleted")
+	}
+}
+
+// --- Store Recovery Point / Image Unit Tests ---
+
+func TestStore_RecoveryPointLifecycle(t *testing.T) {
+	store := NewStore()
+
+	rpUUID := store.AddRecoveryPoint(&nutanix.RecoveryPoint{
+		Name:    "store-test-rp",
+		VMExtID: "vm-1",
+	})
+
+	rp := store.GetRecoveryPoint(rpUUID)
+	if rp == nil {
+		t.Fatal("expected recovery point to exist")
+	}
+	if rp.Name != "store-test-rp" {
+		t.Errorf("expected name store-test-rp, got %s", rp.Name)
+	}
+
+	ok := store.DeleteRecoveryPoint(rpUUID)
+	if !ok {
+		t.Error("expected delete to return true")
+	}
+
+	rp = store.GetRecoveryPoint(rpUUID)
+	if rp != nil {
+		t.Error("expected recovery point to be nil after delete")
+	}
+
+	ok = store.DeleteRecoveryPoint("nonexistent")
+	if ok {
+		t.Error("expected delete to return false for nonexistent")
+	}
+}
+
+func TestStore_ImageLifecycle(t *testing.T) {
+	store := NewStore()
+
+	imgUUID := store.AddImage(&nutanix.Image{
+		Name:      "store-test-img",
+		Type:      "DISK_IMAGE",
+		SizeBytes: 1024,
+	})
+
+	img := store.GetImage(imgUUID)
+	if img == nil {
+		t.Fatal("expected image to exist")
+	}
+	if img.Name != "store-test-img" {
+		t.Errorf("expected name store-test-img, got %s", img.Name)
+	}
+	if img.SizeBytes != 1024 {
+		t.Errorf("expected size 1024, got %d", img.SizeBytes)
+	}
+
+	ok := store.DeleteImage(imgUUID)
+	if !ok {
+		t.Error("expected delete to return true")
+	}
+
+	img = store.GetImage(imgUUID)
+	if img != nil {
+		t.Error("expected image to be nil after delete")
+	}
+
+	ok = store.DeleteImage("nonexistent")
+	if ok {
+		t.Error("expected delete to return false for nonexistent")
+	}
+}
+
+// --- Standalone Binary Build Test ---
+
+func TestHandler_ReturnsNonNil(t *testing.T) {
+	srv := NewServer(WithFixtures())
+	defer srv.Close()
+
+	if srv.Handler() == nil {
+		t.Error("expected non-nil Handler()")
 	}
 }

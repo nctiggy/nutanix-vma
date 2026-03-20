@@ -30,6 +30,7 @@ type Option func(*Server)
 type Server struct {
 	HTTPServer *httptest.Server
 	Store      *Store
+	handler    http.Handler
 }
 
 // NewServer creates a new mock Nutanix API server.
@@ -45,9 +46,15 @@ func NewServer(opts ...Option) *Server {
 
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
+	s.handler = mux
 	s.HTTPServer = httptest.NewServer(mux)
 
 	return s
+}
+
+// Handler returns the HTTP handler for use with a standalone http.Server.
+func (s *Server) Handler() http.Handler {
+	return s.handler
 }
 
 // URL returns the mock server's base URL.
@@ -77,6 +84,21 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// Cluster endpoints
 	mux.HandleFunc("/api/clustermgmt/v4.0/config/clusters", s.handleClusterList)
+
+	// Recovery point (snapshot) endpoints
+	mux.HandleFunc("/api/dataprotection/v4.0/config/recovery-points", s.handleRecoveryPointCreate)
+	mux.HandleFunc("/api/dataprotection/v4.0/config/recovery-points/", s.handleRecoveryPointByID)
+
+	// Image endpoints
+	mux.HandleFunc("/api/vmm/v4.0/images", s.handleImageCreate)
+	mux.HandleFunc("/api/vmm/v4.0/images/", s.handleImageByID)
+
+	// CBT endpoints
+	mux.HandleFunc(
+		"/api/storage/v4.0/config/changed-regions/$actions/discover-cluster",
+		s.handleCBTDiscoverCluster,
+	)
+	mux.HandleFunc("/api/storage/v4.0/config/changed-regions", s.handleCBTChangedRegions)
 }
 
 // WithFixtures loads default fixture data into the mock server.
@@ -87,6 +109,13 @@ func WithFixtures() Option {
 		s.Store.Subnets = defaultSubnets()
 		s.Store.StorageContainers = defaultStorageContainers()
 		s.Store.Clusters = defaultClusters()
+	}
+}
+
+// WithCBTConfig sets the CBT configuration for the mock server.
+func WithCBTConfig(cfg CBTConfig) Option {
+	return func(s *Server) {
+		s.Store.CBTConfig = cfg
 	}
 }
 

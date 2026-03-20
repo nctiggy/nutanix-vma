@@ -24,6 +24,28 @@ import (
 	"github.com/nctiggy/nutanix-vma/internal/nutanix"
 )
 
+const recoveryPointStatusComplete = "COMPLETE"
+
+// CBTConfig holds configurable CBT mock behavior.
+type CBTConfig struct {
+	// ChangedRegions to return for CBT queries.
+	ChangedRegions []nutanix.ChangedRegion
+	// JWTToken to return from cluster discovery.
+	JWTToken string
+}
+
+// DefaultCBTConfig returns a default CBT configuration with sample regions.
+func DefaultCBTConfig() CBTConfig {
+	return CBTConfig{
+		ChangedRegions: []nutanix.ChangedRegion{
+			{Offset: 0, Length: 65536},
+			{Offset: 1048576, Length: 131072},
+			{Offset: 4194304, Length: 65536},
+		},
+		JWTToken: "mock-jwt-token-for-cbt",
+	}
+}
+
 // Store holds in-memory state for the mock Nutanix API server.
 // All access is protected by sync.RWMutex for thread safety.
 type Store struct {
@@ -36,7 +58,10 @@ type Store struct {
 	Tasks             map[string]*TaskState
 	RecoveryPoints    map[string]*nutanix.RecoveryPoint
 	Images            map[string]*nutanix.Image
+	CBTConfig         CBTConfig
 
+	// imageCounter generates unique image/recovery-point IDs.
+	imageCounter atomic.Int64
 	// taskCounter generates unique task IDs.
 	taskCounter atomic.Int64
 }
@@ -126,6 +151,79 @@ func (s *Store) GetClusters() []nutanix.Cluster {
 	result := make([]nutanix.Cluster, len(s.Clusters))
 	copy(result, s.Clusters)
 	return result
+}
+
+// --- Recovery Point operations ---
+
+// AddRecoveryPoint adds a recovery point to the store and returns its UUID.
+func (s *Store) AddRecoveryPoint(rp *nutanix.RecoveryPoint) string {
+	id := s.imageCounter.Add(1)
+	rp.ExtID = fmt.Sprintf("rp-%08d", id)
+	rp.Status = recoveryPointStatusComplete
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.RecoveryPoints[rp.ExtID] = rp
+	return rp.ExtID
+}
+
+// GetRecoveryPoint returns a recovery point by UUID, or nil if not found.
+func (s *Store) GetRecoveryPoint(uuid string) *nutanix.RecoveryPoint {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rp, ok := s.RecoveryPoints[uuid]
+	if !ok {
+		return nil
+	}
+	cp := *rp
+	return &cp
+}
+
+// DeleteRecoveryPoint removes a recovery point from the store.
+func (s *Store) DeleteRecoveryPoint(uuid string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.RecoveryPoints[uuid]; !ok {
+		return false
+	}
+	delete(s.RecoveryPoints, uuid)
+	return true
+}
+
+// --- Image operations ---
+
+// AddImage adds an image to the store and returns its UUID.
+func (s *Store) AddImage(img *nutanix.Image) string {
+	id := s.imageCounter.Add(1)
+	img.ExtID = fmt.Sprintf("img-%08d", id)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Images[img.ExtID] = img
+	return img.ExtID
+}
+
+// GetImage returns an image by UUID, or nil if not found.
+func (s *Store) GetImage(uuid string) *nutanix.Image {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	img, ok := s.Images[uuid]
+	if !ok {
+		return nil
+	}
+	cp := *img
+	return &cp
+}
+
+// DeleteImage removes an image from the store.
+func (s *Store) DeleteImage(uuid string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.Images[uuid]; !ok {
+		return false
+	}
+	delete(s.Images, uuid)
+	return true
 }
 
 // --- Task operations ---

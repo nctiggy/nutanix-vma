@@ -311,3 +311,33 @@ Iteration 4 [2026-03-20T05:56:46Z]: Nutanix API Client -- Networking, Storage & 
 ### Issues: None
 ---
 Iteration 5 [2026-03-20T06:07:48Z]: Nutanix API Client -- CBT/CRT COMPLETED. CI passed (run 23331232731). Attempt 1.
+
+---
+
+## US-008b: Mock Nutanix API Server -- Snapshots, Images, CBT
+
+### Status: Implemented, pending CI verification
+
+### What was done:
+- Created pkg/mock/handlers_snapshot.go: handleRecoveryPointCreate (POST -> task with RP entity), handleRecoveryPointByID (routing to get/delete/clone actions), handleRecoveryPointGet, handleRecoveryPointDelete (DELETE -> task), handleCloneVMFromRP (POST $actions/vm-recovery -> creates clone VM in store -> task with VM entity)
+- Created pkg/mock/handlers_image.go: handleImageCreate (POST -> task with image entity), handleImageByID (routing to get/delete/download), handleImageGet, handleImageDelete (DELETE -> task), handleImageDownload (synthetic 0xAA data with configurable size, HTTP Range header support including bytes=start-end and suffix -N forms, Content-Range/Accept-Ranges headers, 206 Partial Content)
+- Created pkg/mock/handlers_cbt.go: handleCBTDiscoverCluster (returns mock PE URL = server URL + JWT token from CBTConfig), handleCBTChangedRegions (validates JWT cookie NTNX_IGW_SESSION, paginated via offset with page size 3, returns nextOffset when more regions available)
+- Updated pkg/mock/store.go: Added CBTConfig struct (ChangedRegions, JWTToken) with DefaultCBTConfig(), imageCounter for RP/image IDs, AddRecoveryPoint/GetRecoveryPoint/DeleteRecoveryPoint, AddImage/GetImage/DeleteImage, recoveryPointStatusComplete constant
+- Updated pkg/mock/server.go: Registered 6 new route handlers (recovery-points create/byID, images create/byID, CBT discover/changed-regions), added WithCBTConfig option, Handler() method for standalone use
+- Created cmd/mock-nutanix/main.go: Standalone binary with --port flag (default 9440), loads fixtures and default CBT config
+- Added 25 new tests to server_test.go: snapshot CRUD (create, get, get-not-found, delete, delete-not-found, clone, clone-not-found), image CRUD (create, get, get-not-found, download with data verification, download-not-found, range header, suffix range, delete, delete-not-found), CBT (discover cluster, changed regions single page, paginated multi-page, zero regions, invalid JWT, missing JWT), full end-to-end flow (snapshot->image->download->cleanup), store unit tests (RP lifecycle, image lifecycle), Handler() non-nil check
+
+### Verification:
+- `make build` passes
+- `make test` passes (87.2% coverage on pkg/mock)
+- `make lint` passes (0 issues)
+
+### Patterns discovered:
+- goconst linter counts string occurrences across all files in the package -- "COMPLETE" used 3 times (store + 2 tests) triggers it; extract to unexported constant
+- golangci-lint modernize rule: use built-in max() for clamping instead of if-block (e.g., `start = max(totalSize-n, 0)`)
+- lll: format long URL strings with string concatenation (`"part1" + "part2"`) to stay under 120 chars
+- CBT discover handler uses s.URL() for PE URL, making mock server serve as both PC and PE (same as real tests)
+- httptest.Server.Config.Handler provides access to the underlying mux for standalone http.ListenAndServe reuse
+- Range header parsing needs both prefix (bytes=start-end) and suffix (bytes=-N) forms for image download compatibility
+
+### Issues: None
