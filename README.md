@@ -221,6 +221,51 @@ git log --oneline
 gh run list --limit 10
 ```
 
+#### Built-In Telemetry
+
+The CI-verified loop automatically records full telemetry to `metrics.json` and generates a human-readable `metrics-report.md` at the end of the run (or on Ctrl+C). Tracked metrics include:
+
+| Metric | Description |
+|--------|-------------|
+| Timestamps | UTC start/end time for the overall run and each iteration |
+| Per-iteration timing | How long each story attempt took (Claude thinking + CI wait) |
+| Pass/fail per story | How many CI attempts each story needed to pass |
+| First-pass CI rate | Percentage of stories that passed CI on the first try |
+| Failure timeline | Chronological list of every CI failure with links to the GH Actions run |
+| Efficiency analysis | Productive vs debug vs wasted iterations, average durations |
+| Attempt tracking | Which stories needed multiple attempts and how many |
+
+Example output from `metrics-report.md`:
+
+```markdown
+## Summary
+
+| Metric | Value |
+|--------|-------|
+| Total Duration | 2h 45m 12s |
+| Total Iterations | 28 |
+| Stories Completed | 22 |
+| CI Passes | 22 |
+| CI Failures | 4 |
+| First-Pass CI Rate | 84% |
+
+## Per-Story Breakdown
+
+### Story 1: Project Scaffolding (story-1)
+| Attempt | Result | Duration | CI Run | Time |
+|---------|--------|----------|--------|------|
+| 1 | SKIP (pre-CI) | 3m 22s | -- | 2026-03-19T22:00:00Z |
+
+### Story 13b: Migration Controller -- Disk Transfer (story-13b)
+| Attempt | Result | Duration | CI Run | Time |
+|---------|--------|----------|--------|------|
+| 1 | **FAIL** | 8m 15s | 12345 | 2026-03-20T01:30:00Z |
+| 2 | **FAIL** | 6m 44s | 12348 | 2026-03-20T01:39:00Z |
+| 3 | PASS | 7m 02s | 12351 | 2026-03-20T01:46:00Z |
+```
+
+The metrics files are committed to the repo so the full build history is preserved for post-mortem analysis.
+
 ### What's Next After Ralph
 
 1. Validate against a real Nutanix cluster when access is available
