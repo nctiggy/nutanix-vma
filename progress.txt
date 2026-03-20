@@ -975,3 +975,35 @@ CI failure was lint error: staticcheck SA1019 for deprecated mgr.GetEventRecorde
 - client.IgnoreAlreadyExists returns nil when err is AlreadyExists
 
 ### Issues: None
+---
+Iteration 21: US-017 lint fix + US-018 E2E Test Framework COMPLETED (pending CI verification).
+
+---
+
+## US-019: Documentation & Release
+
+### Status: Implemented, pending CI verification
+
+### What was done:
+- Rewrote README.md with full user journey documentation:
+  - Prerequisites, Installation (make install, make deploy), Quickstart (5-step guide)
+  - CRD Reference for all 6 CRDs with field tables
+  - kubectl plugin usage (inventory, plan, migrate, status, cancel)
+  - Configuration (operator flags, Prometheus metrics, Kubernetes events)
+  - Troubleshooting section (Provider, Plan, Migration, cleanup)
+- Created CONTRIBUTING.md:
+  - Dev setup, project structure, testing conventions
+  - Code style guidelines (lint, errcheck, prealloc)
+  - PR process, commit message format, release process
+- Created .github/workflows/release.yaml:
+  - Triggers on tag push (v*)
+  - Builds and pushes Docker image to ghcr.io
+  - Creates GitHub Release with auto-generated changelog
+  - Supports semver tags and pre-release markers
+
+### Verification:
+- `make build` passes
+- `make lint` passes (0 issues)
+- All unit tests pass
+
+### Issues: None
