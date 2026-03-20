@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	kubevirtv1 "kubevirt.io/api/core/v1"
 	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -200,6 +202,7 @@ func buildFullMigrationReconciler(
 		) (nutanix.NutanixClient, error) {
 			return fakeNX, nil
 		},
+		Recorder: record.NewFakeRecorder(100),
 	}
 }
 
@@ -1192,6 +1195,7 @@ func buildWarmMigrationReconciler(
 		) (nutanix.NutanixClient, error) {
 			return fakeNX, nil
 		},
+		Recorder: record.NewFakeRecorder(100),
 	}
 }
 
@@ -1612,6 +1616,7 @@ func buildHookMigrationReconciler(
 		) (nutanix.NutanixClient, error) {
 			return fakeNX, nil
 		},
+		Recorder: record.NewFakeRecorder(100),
 	}
 }
 
@@ -2029,5 +2034,140 @@ func TestGetHookAttempt(t *testing.T) {
 	job.Annotations[hookAnnotationKey] = "invalid"
 	if getHookAttempt(job) != 1 {
 		t.Error("expected 1 for invalid annotation")
+	}
+}
+
+func TestMigrationReconcile_EventsEmitted(t *testing.T) {
+	vm := defaultMigrationVM()
+	fakeNX := &fakeNutanixClient{
+		vms:              []nutanix.VM{vm},
+		createImageUUIDs: []string{"img-uuid-001"},
+	}
+
+	r := buildFullMigrationReconciler(
+		fakeNX, []string{migTestVM1ID})
+	fakeRecorder := r.Recorder.(*record.FakeRecorder)
+
+	// First reconcile: starts migration, advances to ImportDisks
+	_, err := r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Drain events and check for MigrationStarted
+	foundStarted := false
+drainLoop1:
+	for {
+		select {
+		case evt := <-fakeRecorder.Events:
+			if strings.Contains(evt, "MigrationStarted") {
+				foundStarted = true
+			}
+		default:
+			break drainLoop1
+		}
+	}
+	if !foundStarted {
+		t.Error("expected MigrationStarted event")
+	}
+
+	// Mark DV as succeeded
+	m := getMigration(t, r)
+	dvName := m.Status.VMs[0].DataVolumeNames[0]
+	dv := &cdiv1beta1.DataVolume{}
+	if err := r.Get(context.Background(), types.NamespacedName{
+		Name:      dvName,
+		Namespace: migTestTargetNS,
+	}, dv); err != nil {
+		t.Fatalf("DataVolume not found: %v", err)
+	}
+	dv.Status.Phase = cdiv1beta1.Succeeded
+	if err := r.Status().Update(
+		context.Background(), dv); err != nil {
+		t.Fatalf("failed to update DV status: %v", err)
+	}
+
+	// Second reconcile: completes migration
+	_, err = r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("reconcile 2: unexpected error: %v", err)
+	}
+
+	// Drain events and check for MigrationCompleted + PhaseTransition
+	foundCompleted := false
+	foundPhase := false
+drainLoop2:
+	for {
+		select {
+		case evt := <-fakeRecorder.Events:
+			if strings.Contains(evt, "MigrationCompleted") {
+				foundCompleted = true
+			}
+			if strings.Contains(evt, "PhaseTransition") {
+				foundPhase = true
+			}
+		default:
+			break drainLoop2
+		}
+	}
+	if !foundCompleted {
+		t.Error("expected MigrationCompleted event")
+	}
+	if !foundPhase {
+		t.Error("expected PhaseTransition event")
+	}
+}
+
+func TestMigrationReconcile_FailureEvent(t *testing.T) {
+	vm := defaultMigrationVM()
+	fakeNX := &fakeNutanixClient{
+		vms:         []nutanix.VM{vm},
+		powerOffErr: errors.New("power off failed"),
+	}
+
+	r := buildFullMigrationReconciler(
+		fakeNX, []string{migTestVM1ID})
+	fakeRecorder := r.Recorder.(*record.FakeRecorder)
+
+	_, err := r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	foundFailed := false
+drainLoop:
+	for {
+		select {
+		case evt := <-fakeRecorder.Events:
+			if strings.Contains(evt, "MigrationFailed") {
+				foundFailed = true
+			}
+		default:
+			break drainLoop
+		}
+	}
+	if !foundFailed {
+		t.Error("expected MigrationFailed event")
+	}
+}
+
+func TestMigrationReconcile_NilRecorder(t *testing.T) {
+	vm := defaultMigrationVM()
+	fakeNX := &fakeNutanixClient{
+		vms:              []nutanix.VM{vm},
+		createImageUUIDs: []string{"img-uuid-001"},
+	}
+
+	r := buildFullMigrationReconciler(
+		fakeNX, []string{migTestVM1ID})
+	r.Recorder = nil // No recorder -- should not panic
+
+	_, err := r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

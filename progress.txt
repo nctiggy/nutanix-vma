@@ -841,3 +841,55 @@ Iteration 15 [2026-03-20T09:30:35Z]: Migration Controller -- Warm Migration (Exp
 ### Issues: None (pre-existing integration test instability not caused by this change)
 ---
 Iteration 16 [2026-03-20T09:50:53Z]: Hook System COMPLETED. CI passed (run 23337477214). Attempt 1.
+---
+Iteration 17 [2026-03-20T10:07:47Z]: No commits produced for kubectl-vma Plugin (attempt 1). Check logs.
+---
+Iteration 18 [2026-03-20T10:14:26Z]: No commits produced for kubectl-vma Plugin (attempt 2). Check logs.
+---
+Iteration 19 [2026-03-20T10:36:36Z]: No commits produced for kubectl-vma Plugin (attempt 3). Check logs.
+
+---
+
+## US-017: Observability -- Events, Logging, Metrics
+
+### Status: Implemented, pending CI verification
+
+### What was done:
+- Created internal/observability/metrics.go: Prometheus metrics via prometheus/client_golang
+  - vma_migrations_total (CounterVec, labels: status=completed/failed/cancelled)
+  - vma_migration_duration_seconds (HistogramVec, labels: vm, buckets: 1m..17h exponential)
+  - vma_disk_transfer_bytes (CounterVec, labels: vm)
+  - vma_active_migrations (Gauge, inc on start, dec on terminal)
+  - Registered with controller-runtime's metrics.Registry (auto-served on /metrics)
+- Created internal/observability/metrics_test.go: 7 tests (registration, increment, observe, add, gauge inc/dec)
+- Extended internal/controller/migration_controller.go with observability:
+  - Added record.EventRecorder field, wired in SetupMigrationController via mgr.GetEventRecorderFor
+  - Events: MigrationStarted (Normal), PhaseTransition (Normal), MigrationCompleted (Normal), MigrationFailed (Warning), MigrationCancelled (Normal)
+  - Structured logging: migration name, VM ID, phase, duration on phase transitions and failures
+  - Metrics: MigrationsTotal incremented on terminal status, ActiveMigrations inc/dec, DiskTransferBytes added on import completion, MigrationDurationSeconds observed on VM completion
+  - recordEvent helper (nil-safe), recordVMDuration helper
+  - RBAC marker: events create;patch
+- Updated migration_controller_test.go: 3 new tests
+  - TestMigrationReconcile_EventsEmitted: verifies MigrationStarted, PhaseTransition, MigrationCompleted events via FakeRecorder
+  - TestMigrationReconcile_FailureEvent: verifies MigrationFailed event on PowerOff failure
+  - TestMigrationReconcile_NilRecorder: verifies no panic when Recorder is nil
+  - All existing tests updated with FakeRecorder
+- Updated test/integration/suite_test.go: wired EventRecorder into MigrationReconciler
+- Updated test/integration/migration_test.go: added event verification to cold migration integration test
+  - Verifies MigrationStarted, PhaseTransition, MigrationCompleted events via K8s Event API
+- Regenerated config/rbac/role.yaml with events permission
+
+### Verification:
+- `make build` passes
+- `make test` passes (79.2% coverage on internal/controller, 100% on internal/observability)
+- Cold migration integration test passes with event verification
+- Hook test timeout is pre-existing (documented in US-015)
+
+### Patterns discovered:
+- controller-runtime metrics.Registry auto-serves on /metrics endpoint -- no additional wiring needed
+- record.NewFakeRecorder(bufferSize) with channel drain loop for event verification in unit tests
+- K8s Event objects are queryable via client.List in integration tests (envtest creates real events)
+- EventRecorder nil-check pattern: recordEvent helper allows tests without recorder (r.Recorder != nil guard)
+- Histogram exponential buckets for migration duration: 60*2^n gives 1m, 2m, 4m, 8m, ... up to ~17h
+
+### Issues: None (hook test timeout is pre-existing, not caused by this change)

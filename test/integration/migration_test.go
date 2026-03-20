@@ -17,6 +17,7 @@ limitations under the License.
 package integration
 
 import (
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -376,6 +377,26 @@ var _ = Describe("Migration Controller", func() {
 			}
 			Expect(hasReady).To(BeTrue(),
 				"Expected Ready=True condition")
+
+			// Verify Kubernetes events emitted
+			Eventually(func(g Gomega) {
+				events := &corev1.EventList{}
+				g.Expect(k8sClient.List(ctx, events,
+					client.InNamespace(migTestNS),
+				)).To(Succeed())
+				reasons := make([]string, 0,
+					len(events.Items))
+				for _, e := range events.Items {
+					reasons = append(reasons, e.Reason)
+				}
+				joined := strings.Join(reasons, ",")
+				g.Expect(joined).To(
+					ContainSubstring("MigrationStarted"))
+				g.Expect(joined).To(
+					ContainSubstring("PhaseTransition"))
+				g.Expect(joined).To(
+					ContainSubstring("MigrationCompleted"))
+			}, migTimeout, migInterval).Should(Succeed())
 		})
 	})
 

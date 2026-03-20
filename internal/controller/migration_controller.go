@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	kubevirtv1 "kubevirt.io/api/core/v1"
 	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -37,6 +38,7 @@ import (
 	vmav1alpha1 "github.com/nctiggy/nutanix-vma/api/v1alpha1"
 	"github.com/nctiggy/nutanix-vma/internal/builder"
 	"github.com/nctiggy/nutanix-vma/internal/nutanix"
+	"github.com/nctiggy/nutanix-vma/internal/observability"
 	"github.com/nctiggy/nutanix-vma/internal/transfer"
 )
 
@@ -107,6 +109,7 @@ type migrationContext struct {
 type MigrationReconciler struct {
 	client.Client
 	ClientFactory NutanixClientFactory
+	Recorder      record.EventRecorder
 }
 
 // SetupMigrationController registers the Migration reconciler with the manager.
@@ -114,6 +117,8 @@ func SetupMigrationController(mgr ctrl.Manager) error {
 	return (&MigrationReconciler{
 		Client:        mgr.GetClient(),
 		ClientFactory: nutanix.NewClient,
+		Recorder: mgr.GetEventRecorderFor(
+			"migration-controller"),
 	}).SetupWithManager(mgr)
 }
 
@@ -131,6 +136,7 @@ func SetupMigrationController(mgr ctrl.Manager) error {
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;create;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;create;delete
 // +kubebuilder:rbac:groups=vma.nutanix.io,resources=hooks,verbs=get
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile handles Migration reconciliation.
 func (r *MigrationReconciler) Reconcile(
@@ -200,6 +206,15 @@ func (r *MigrationReconciler) Reconcile(
 				Message:            "Migration is in progress",
 				ObservedGeneration: migration.Generation,
 			})
+		r.recordEvent(migration, corev1.EventTypeNormal,
+			"MigrationStarted",
+			fmt.Sprintf("Migration started with %d VMs",
+				len(migration.Status.VMs)))
+		observability.ActiveMigrations.Inc()
+		logger.Info("Migration started",
+			"migration", migration.Name,
+			"vmCount", len(migration.Status.VMs),
+			"type", plan.Spec.Type)
 	}
 
 	// Handle cancellations
@@ -417,6 +432,8 @@ func (r *MigrationReconciler) advanceSingleVM(
 	vmStatus *vmav1alpha1.VMMigrationStatus,
 	mctx *migrationContext,
 ) bool {
+	logger := log.FromContext(ctx)
+
 	order := phaseOrder
 	if mctx.Plan.Spec.Type == vmav1alpha1.MigrationTypeWarm {
 		order = warmPhaseOrder
@@ -427,8 +444,23 @@ func (r *MigrationReconciler) advanceSingleVM(
 			return false
 		}
 
+		phaseStart := time.Now()
 		result := r.executePhase(ctx, vmStatus, mctx)
+		phaseDuration := time.Since(phaseStart)
+
 		if result.Error != nil {
+			logger.Info("VM phase failed",
+				"migration", mctx.Migration.Name,
+				"vm", vmStatus.ID,
+				"phase", vmStatus.Phase,
+				"duration", phaseDuration.String(),
+				"error", result.Error.Error())
+			r.recordEvent(mctx.Migration,
+				corev1.EventTypeWarning,
+				"MigrationFailed",
+				fmt.Sprintf("VM %s failed in phase %s: %s",
+					vmStatus.Name, vmStatus.Phase,
+					result.Error.Error()))
 			r.cleanupFailedVM(ctx, vmStatus, mctx)
 			vmStatus.Phase = vmav1alpha1.VMPhaseFailed
 			vmStatus.Error = result.Error.Error()
@@ -441,11 +473,24 @@ func (r *MigrationReconciler) advanceSingleVM(
 		}
 
 		// Advance to next phase
+		prev := vmStatus.Phase
 		next := nextPhaseInOrder(vmStatus.Phase, order)
 		vmStatus.Phase = next
+		logger.Info("VM phase transition",
+			"migration", mctx.Migration.Name,
+			"vm", vmStatus.ID,
+			"from", prev, "to", next,
+			"duration", phaseDuration.String())
+		r.recordEvent(mctx.Migration,
+			corev1.EventTypeNormal,
+			"PhaseTransition",
+			fmt.Sprintf("VM %s: %s -> %s",
+				vmStatus.Name, prev, next))
+
 		if next == vmav1alpha1.VMPhaseCompleted {
 			now := metav1.Now()
 			vmStatus.Completed = &now
+			r.recordVMDuration(vmStatus)
 			return false
 		}
 	}
@@ -760,6 +805,18 @@ func (r *MigrationReconciler) phaseImportDisks(
 		return PhaseResult{Completed: false}
 	}
 
+	// Record transferred bytes from disk sizes
+	for _, d := range dataDisks {
+		size := d.DiskSizeBytes
+		if size == 0 && d.BackingInfo != nil {
+			size = d.BackingInfo.DiskSizeBytes
+		}
+		if size > 0 {
+			observability.DiskTransferBytes.WithLabelValues(
+				vmStatus.Name).Add(float64(size))
+		}
+	}
+
 	return PhaseResult{Completed: true}
 }
 
@@ -1015,6 +1072,11 @@ func (r *MigrationReconciler) updateOverallStatus(
 				Message:            "All VMs were cancelled",
 				ObservedGeneration: migration.Generation,
 			})
+		r.recordEvent(migration, corev1.EventTypeNormal,
+			"MigrationCancelled", "All VMs were cancelled")
+		observability.MigrationsTotal.WithLabelValues(
+			"cancelled").Inc()
+		observability.ActiveMigrations.Dec()
 		return
 	}
 
@@ -1029,6 +1091,13 @@ func (r *MigrationReconciler) updateOverallStatus(
 					"%d of %d VMs failed", failed, total),
 				ObservedGeneration: migration.Generation,
 			})
+		r.recordEvent(migration, corev1.EventTypeWarning,
+			"MigrationFailed",
+			fmt.Sprintf("%d of %d VMs failed",
+				failed, total))
+		observability.MigrationsTotal.WithLabelValues(
+			"failed").Inc()
+		observability.ActiveMigrations.Dec()
 		return
 	}
 
@@ -1042,6 +1111,13 @@ func (r *MigrationReconciler) updateOverallStatus(
 				"All %d VMs migrated successfully", total),
 			ObservedGeneration: migration.Generation,
 		})
+	r.recordEvent(migration, corev1.EventTypeNormal,
+		"MigrationCompleted",
+		fmt.Sprintf("All %d VMs migrated successfully",
+			total))
+	observability.MigrationsTotal.WithLabelValues(
+		"completed").Inc()
+	observability.ActiveMigrations.Dec()
 }
 
 // handleDeletion manages Migration deletion with finalizer.
@@ -1085,6 +1161,10 @@ func (r *MigrationReconciler) setMigrationFailed(
 			Message:            message,
 			ObservedGeneration: migration.Generation,
 		})
+
+	r.recordEvent(migration, corev1.EventTypeWarning,
+		"MigrationFailed", message)
+	observability.MigrationsTotal.WithLabelValues("failed").Inc()
 
 	if err := r.Status().Update(ctx, migration); err != nil {
 		return ctrl.Result{}, err
@@ -1824,6 +1904,29 @@ func getDiskSize(disk nutanix.Disk) int64 {
 		return disk.BackingInfo.DiskSizeBytes
 	}
 	return 0
+}
+
+// recordEvent emits a Kubernetes event if a Recorder is configured.
+func (r *MigrationReconciler) recordEvent(
+	migration *vmav1alpha1.Migration,
+	eventType, reason, message string,
+) {
+	if r.Recorder != nil {
+		r.Recorder.Event(migration, eventType, reason, message)
+	}
+}
+
+// recordVMDuration records the migration duration metric for a
+// completed VM.
+func (r *MigrationReconciler) recordVMDuration(
+	vmStatus *vmav1alpha1.VMMigrationStatus,
+) {
+	if vmStatus.Started != nil && vmStatus.Completed != nil {
+		duration := vmStatus.Completed.Time.Sub(
+			vmStatus.Started.Time).Seconds()
+		observability.MigrationDurationSeconds.WithLabelValues(
+			vmStatus.Name).Observe(duration)
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
