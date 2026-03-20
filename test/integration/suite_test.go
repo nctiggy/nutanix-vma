@@ -140,7 +140,7 @@ var _ = BeforeSuite(func() {
 	err = (&controller.MigrationReconciler{
 		Client:        mgr.GetClient(),
 		ClientFactory: fastFactory,
-		Recorder: mgr.GetEventRecorderFor(
+		Recorder: mgr.GetEventRecorder(
 			"migration-controller"),
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())

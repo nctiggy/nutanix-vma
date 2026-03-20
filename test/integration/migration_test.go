@@ -25,6 +25,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -378,15 +379,15 @@ var _ = Describe("Migration Controller", func() {
 			Expect(hasReady).To(BeTrue(),
 				"Expected Ready=True condition")
 
-			// Verify Kubernetes events emitted
+			// Verify Kubernetes events emitted (new events API)
 			Eventually(func(g Gomega) {
-				events := &corev1.EventList{}
-				g.Expect(k8sClient.List(ctx, events,
+				eventList := &eventsv1.EventList{}
+				g.Expect(k8sClient.List(ctx, eventList,
 					client.InNamespace(migTestNS),
 				)).To(Succeed())
 				reasons := make([]string, 0,
-					len(events.Items))
-				for _, e := range events.Items {
+					len(eventList.Items))
+				for _, e := range eventList.Items {
 					reasons = append(reasons, e.Reason)
 				}
 				joined := strings.Join(reasons, ",")

@@ -27,7 +27,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	kubevirtv1 "kubevirt.io/api/core/v1"
 	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -202,7 +202,7 @@ func buildFullMigrationReconciler(
 		) (nutanix.NutanixClient, error) {
 			return fakeNX, nil
 		},
-		Recorder: record.NewFakeRecorder(100),
+		Recorder: events.NewFakeRecorder(100),
 	}
 }
 
@@ -1195,7 +1195,7 @@ func buildWarmMigrationReconciler(
 		) (nutanix.NutanixClient, error) {
 			return fakeNX, nil
 		},
-		Recorder: record.NewFakeRecorder(100),
+		Recorder: events.NewFakeRecorder(100),
 	}
 }
 
@@ -1616,7 +1616,7 @@ func buildHookMigrationReconciler(
 		) (nutanix.NutanixClient, error) {
 			return fakeNX, nil
 		},
-		Recorder: record.NewFakeRecorder(100),
+		Recorder: events.NewFakeRecorder(100),
 	}
 }
 
@@ -2046,7 +2046,7 @@ func TestMigrationReconcile_EventsEmitted(t *testing.T) {
 
 	r := buildFullMigrationReconciler(
 		fakeNX, []string{migTestVM1ID})
-	fakeRecorder := r.Recorder.(*record.FakeRecorder)
+	fakeRecorder := r.Recorder.(*events.FakeRecorder)
 
 	// First reconcile: starts migration, advances to ImportDisks
 	_, err := r.Reconcile(
@@ -2129,7 +2129,7 @@ func TestMigrationReconcile_FailureEvent(t *testing.T) {
 
 	r := buildFullMigrationReconciler(
 		fakeNX, []string{migTestVM1ID})
-	fakeRecorder := r.Recorder.(*record.FakeRecorder)
+	fakeRecorder := r.Recorder.(*events.FakeRecorder)
 
 	_, err := r.Reconcile(
 		context.Background(), migrationRequest())

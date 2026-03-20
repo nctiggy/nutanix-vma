@@ -27,7 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	kubevirtv1 "kubevirt.io/api/core/v1"
 	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -109,7 +109,7 @@ type migrationContext struct {
 type MigrationReconciler struct {
 	client.Client
 	ClientFactory NutanixClientFactory
-	Recorder      record.EventRecorder
+	Recorder      events.EventRecorder
 }
 
 // SetupMigrationController registers the Migration reconciler with the manager.
@@ -117,7 +117,7 @@ func SetupMigrationController(mgr ctrl.Manager) error {
 	return (&MigrationReconciler{
 		Client:        mgr.GetClient(),
 		ClientFactory: nutanix.NewClient,
-		Recorder: mgr.GetEventRecorderFor(
+		Recorder: mgr.GetEventRecorder(
 			"migration-controller"),
 	}).SetupWithManager(mgr)
 }
@@ -1912,7 +1912,9 @@ func (r *MigrationReconciler) recordEvent(
 	eventType, reason, message string,
 ) {
 	if r.Recorder != nil {
-		r.Recorder.Event(migration, eventType, reason, message)
+		r.Recorder.Eventf(
+			migration, nil, eventType, reason, reason, message,
+		)
 	}
 }
 
