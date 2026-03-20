@@ -219,6 +219,104 @@ All execution blockers fixed:
 
 **What Claude did**: Ran the execution simulation (critic loop 4), applied remaining fixes, pushed v4.
 
+### Prompt 7 -- Apply Codex Fixes
+
+> Yeah, apply the fixes, please.
+
+**What Claude did**: Applied all 12 Codex findings to the PRD (v3):
+- Downgraded warm migration to EXPERIMENTAL/GATED
+- Added cold export fallback path (clone -> image -> delete clone)
+- Added idempotency/resume-after-restart requirements
+- Added CDI CA certificate propagation
+- Added target-side validation (StorageClass, NAD, CDI/KubeVirt existence)
+- Added DIRECT_NIC SR-IOV warning
+- Fixed 3 story dependency errors
+- Reworded success metrics to not overclaim envtest capabilities
+- Added PE auth and cold export path to Known Constraints
+
+Committed as PRD v3, pushed to GitHub.
+
+### Prompt 8 -- Push to GitHub + README
+
+> Okay, let's make sure we push this, but also let's build up a pretty good README for this repo. Before we get going, I want you to take note of all of the prompts I've given you to get to this point and push that as part of the repo as well, so people can see how we built out this project. Maybe even include the prompt you gave Codex as part of it, just to give a perspective of what that looked like.
+
+**What Claude did**:
+- Created `docs/how-we-built-this.md` with the full prompt log and process documentation
+- Wrote comprehensive `README.md` with architecture, migration modes, VM metadata mapping, project status, and repo structure
+- Pushed both to GitHub
+
+### Prompt 9 -- Add Ralph Execution Instructions
+
+> In the readme, does it tell me how to run this from the command line with Ralph, based on the Ralph repo I gave you at the beginning?
+
+**What Claude did**: Fetched Ralph's `ralph.sh` to understand exact CLI usage, then added a full "Running Ralph" section to the README:
+- Prerequisites
+- Step 1: Install Ralph
+- Step 2: Convert PRD to prd.json
+- Step 3: Run Ralph (`./scripts/ralph/ralph.sh --tool claude 30`)
+- Monitoring progress commands
+
+### Prompt 10 -- CI-Verified Ralph Loop
+
+> And just to be clear, you're marking up documentation for how to use the snark tank git repo, Ralph, correct? And lastly on this Ralph PRD, are we having a push to GitHub after every loop?
+
+**What Claude did**: Clarified that Ralph commits locally but does NOT push. Craig's response led to:
+
+> It might be cool to have it be that when a Ralph step finishes and it thinks it's finished successfully, that it doesn't mark complete until it pushes to the repo in that test run and we watch using the GH tool to make sure that those GitHub actions are successful before we mark it complete. Then, if it doesn't mark it complete, we spin up a new cloud instance window to troubleshoot and try to get this to a passing state vs doing it all in one giant context window. My biggest fear would be running out of context and then getting into hallucination problems.
+
+**What Claude did**: Built `scripts/ralph-ci.sh` -- a custom wrapper that uses GitHub Actions as an external verification oracle:
+
+```
+For each iteration:
+  1. Claude Code implements the next incomplete story
+  2. Runs make build && make test locally
+  3. Commits and pushes to GitHub
+  4. Watches the CI run via `gh run watch`
+  5. IF CI passes  -> marks story complete
+  6. IF CI fails   -> does NOT mark complete, writes CI failure
+                      logs to progress.txt
+  7. Next iteration: fresh context window reads failure logs and debugs
+```
+
+Key insight from Craig: "a fresh context window for debugging is a feature, not a bug" -- prevents hallucination cascades where a stuck context keeps trying the same broken approach.
+
+Updated README with full documentation including ASCII flow diagram of the Ralph <-> GitHub <-> CI interaction.
+
+### Prompt 11 -- Telemetry and Metrics
+
+> The last thing that I'd love to see is a built-in way to keep track of:
+> - time stamps
+> - how many times we failed and had to redo an iteration loop
+> - the overall, how long did this loop take from start to finish
+> That would be really cool to look back at as a post-mortem and as people look back to this project to see how that all went down.
+
+**What Claude did**: Added full telemetry to `ralph-ci.sh`:
+
+- **`metrics.json`**: Machine-readable telemetry for every iteration -- timestamps (UTC), story ID, result (ci_pass/ci_fail/no_commit/ci_skipped), duration, CI run ID, attempt number, aggregates (first-pass rate, efficiency)
+- **`metrics-report.md`**: Auto-generated human-readable report with summary table, per-story breakdown showing all attempts, failure timeline with GitHub Actions links, and efficiency analysis
+- Report generates automatically on exit (normal, Ctrl+C, or error) via `trap EXIT`
+- Both files committed to repo for post-mortem analysis
+
+### Prompt 12 -- Update Prompt Log
+
+> Did you update the prompt list so that we can see how we got to here?
+
+**What Claude did**: Updated this document (`docs/how-we-built-this.md`) with Prompts 7-12 capturing the full conversation from PRD v3 fixes through CI-verified loop, telemetry, and this meta-update.
+
+---
+
+## Phase 5: Ready to Run
+
+At this point the project has:
+- 7 research documents (~3,000 lines)
+- 1 PRD (v4, 22 stories, 72+ requirements, 4 critic rounds)
+- `scripts/ralph-ci.sh` with CI verification gate and full telemetry
+- Comprehensive README with execution instructions
+- Full prompt log in `docs/how-we-built-this.md`
+- Public repo at https://github.com/nctiggy/nutanix-vma
+
+Next step: convert the PRD to `prd.json` and run `./scripts/ralph-ci.sh 30`.
+
 ---
 
 ## Takeaways
