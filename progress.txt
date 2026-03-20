@@ -1,6 +1,10 @@
 ## Codebase Patterns
 
-(This section will be populated by Ralph as it discovers reusable patterns during implementation.)
+- Hand-write type files in api/v1alpha1/ (do NOT use `kubebuilder create api` -- it generates controller stubs)
+- After any *_types.go change: `make generate && make manifests`
+- Register new API groups in cmd/main.go init() with utilruntime.Must(pkg.AddToScheme(scheme))
+- corev1.PersistentVolumeMode and corev1.PersistentVolumeAccessMode work with kubebuilder Enum validation
+- kubebuilder printcolumn markers provide `kubectl get` table output
 
 ---
 
@@ -32,3 +36,28 @@
 - Kubebuilder generates .custom-gcl.yml for logcheck plugin integration
 ---
 Iteration 1 [2026-03-20T04:44:47Z]: Project Scaffolding COMPLETED. CI passed (run 23329366113). Attempt 1.
+
+---
+
+## US-002a: CRD Types -- Provider, NetworkMap, StorageMap
+
+### Status: Implemented, pending CI verification
+
+### What was done:
+- Created api/v1alpha1/groupversion_info.go (vma.nutanix.io/v1alpha1 group registration)
+- Created api/v1alpha1/nutanixprovider_types.go (NutanixProvider: URL, SecretRef, RefreshInterval, InsecureSkipVerify; status: Phase, VMCount, Conditions; printcolumns for kubectl)
+- Created api/v1alpha1/networkmap_types.go (NetworkMap: ProviderRef, Map[]NetworkPair with Source ID/Name, Destination Type pod/multus + Name/Namespace)
+- Created api/v1alpha1/storagemap_types.go (StorageMap: ProviderRef, Map[]StoragePair with Source ID/Name, Destination StorageClass/VolumeMode/AccessMode)
+- Registered VMA scheme in cmd/main.go init()
+- Created sample CRs in config/samples/ for all 3 types
+- Generated zz_generated.deepcopy.go and CRD YAML in config/crd/bases/
+
+### Verification:
+- `make generate` passes
+- `make manifests` passes (3 CRD YAML files generated)
+- `make build` passes
+- `make test` passes (exits 0)
+
+### Issues: None
+---
+Iteration 2 [2026-03-20T04:50:45Z]: CRD Types -- Provider, NetworkMap, StorageMap COMPLETED. CI passed (run 23329526148). Attempt 1.

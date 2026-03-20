@@ -35,7 +35,8 @@
       ],
       "priority": 2,
       "passes": false,
-      "notes": "Depends on Story 1. Do NOT use kubebuilder create api (it generates controller stubs we don't want yet). Hand-write the type files."
+      "notes": "Depends on Story 1. Do NOT use kubebuilder create api (it generates controller stubs we don't want yet). Hand-write the type files.",
+      "status": "completed"
     },
     {
       "id": "US-002b",

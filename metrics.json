@@ -4,14 +4,27 @@
   "totalDurationSeconds": null,
   "totalDurationHuman": null,
   "maxIterations": 30,
-  "totalIterations": 0,
-  "storiesCompleted": 0,
+  "totalIterations": 1,
+  "storiesCompleted": 1,
   "storiesRemaining": 0,
-  "totalCIRuns": 0,
-  "ciPasses": 0,
+  "totalCIRuns": 1,
+  "ciPasses": 1,
   "ciFails": 0,
   "ciSkipped": 0,
   "noCommitIterations": 0,
   "firstPassRate": null,
-  "iterations": []
+  "iterations": [
+    {
+      "iteration": 1,
+      "storyId": "US-001",
+      "storyTitle": "Project Scaffolding",
+      "result": "ci_pass",
+      "ciRunId": "23329366113",
+      "startTime": "2026-03-20T04:33:36Z",
+      "endTime": "2026-03-20T04:44:47Z",
+      "durationSeconds": 671,
+      "durationHuman": "11m 11s",
+      "attemptNumber": 1
+    }
+  ]
 }
