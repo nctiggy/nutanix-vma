@@ -1007,3 +1007,15 @@ Iteration 21: US-017 lint fix + US-018 E2E Test Framework COMPLETED (pending CI 
 - All unit tests pass
 
 ### Issues: None
+---
+Iteration (manual): US-017 CI FAILED (run 23340137859).
+Story NOT marked complete. The next iteration should debug this failure.
+
+CI failure logs (lint errors -- staticcheck):
+```
+internal/controller/migration_controller.go:120:13: SA1019: mgr.GetEventRecorderFor is deprecated. Please use GetEventRecorder instead.
+test/integration/suite_test.go:143:13: SA1019: mgr.GetEventRecorderFor is deprecated. Please use GetEventRecorder instead.
+2 issues: staticcheck: 2
+```
+
+Fix: Replace `mgr.GetEventRecorderFor("migration-controller")` with `mgr.GetEventRecorder()` in both files. The new API is `GetEventRecorder` (no "For" suffix, no name arg).

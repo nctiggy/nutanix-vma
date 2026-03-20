@@ -361,7 +361,9 @@ If there is nothing to implement (all stories complete), output: <promise>COMPLE
 PROMPT
 )
 
-    echo "$RALPH_PROMPT" | claude --dangerously-skip-permissions --print 2>&1 | tee "/tmp/ralph-iteration-$i.log" || true
+    # Run Claude -- write to file first to avoid pipefail issues
+    echo "$RALPH_PROMPT" | claude --dangerously-skip-permissions --print > "/tmp/ralph-iteration-$i.log" 2>&1 || true
+    cat "/tmp/ralph-iteration-$i.log"
 
     ITER_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     ITER_END_EPOCH=$(date +%s)
@@ -436,12 +438,13 @@ PROMPT
     log "Watching CI run... (this may take a few minutes)"
 
     # Watch the CI run until it completes
-    # NOTE: --exit-status returns non-zero on CI failure. We must capture
-    # the exit code without letting set -e kill the script, so we use || true
-    # and capture the status separately.
-    gh run watch "$RUN_ID" --exit-status 2>&1 | tail -20 || true
+    # NOTE: --exit-status returns non-zero on CI failure. With set -eo pipefail,
+    # we must avoid the pipe failing the script. Write output to a temp file
+    # instead of piping, then check conclusion via API.
+    gh run watch "$RUN_ID" 2>&1 > "/tmp/ralph-ci-watch-$i.log" || true
+    tail -20 "/tmp/ralph-ci-watch-$i.log"
 
-    # Check the actual CI conclusion via the API (more reliable than exit code)
+    # Check the actual CI conclusion via the API (reliable regardless of exit code)
     CI_CONCLUSION=$(gh run view "$RUN_ID" --json conclusion --jq '.conclusion' 2>/dev/null || echo "unknown")
 
     if [ "$CI_CONCLUSION" = "success" ]; then
