@@ -1,0 +1,8 @@
+apiVersion: vma.nutanix.io/v1alpha1
+kind: Migration
+metadata:
+  name: migration-sample
+  namespace: default
+spec:
+  planRef:
+    name: migrationplan-sample

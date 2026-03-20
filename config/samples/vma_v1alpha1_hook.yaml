@@ -1,0 +1,9 @@
+apiVersion: vma.nutanix.io/v1alpha1
+kind: Hook
+metadata:
+  name: hook-sample
+  namespace: default
+spec:
+  image: "busybox:latest"
+  deadline: "5m"
+  serviceAccount: default

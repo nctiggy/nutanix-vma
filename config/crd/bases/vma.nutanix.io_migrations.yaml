@@ -1,0 +1,266 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: migrations.vma.nutanix.io
+spec:
+  group: vma.nutanix.io
+  names:
+    kind: Migration
+    listKind: MigrationList
+    plural: migrations
+    singular: migration
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.planRef.name
+      name: Plan
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.started
+      name: Started
+      type: date
+    - jsonPath: .status.completed
+      name: Completed
+      type: date
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Migration is the Schema for the migrations API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: MigrationSpec defines the desired state of Migration.
+            properties:
+              cancel:
+                description: Cancel is a list of VM UUIDs to cancel migration for.
+                items:
+                  type: string
+                type: array
+              cutover:
+                description: |-
+                  Cutover is the timestamp at which to trigger cutover for warm migrations.
+                  For cold migrations, this field is ignored.
+                format: date-time
+                type: string
+              planRef:
+                description: PlanRef references the MigrationPlan this migration executes.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+            required:
+            - planRef
+            type: object
+          status:
+            description: MigrationStatus defines the observed state of Migration.
+            properties:
+              completed:
+                description: Completed is the timestamp when the migration finished.
+                format: date-time
+                type: string
+              conditions:
+                description: Conditions represent the latest available observations
+                  of the migration's state.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              phase:
+                description: Phase is the overall migration phase.
+                enum:
+                - Pending
+                - Running
+                - Completed
+                - Failed
+                - Cancelled
+                type: string
+              started:
+                description: Started is the timestamp when the migration began.
+                format: date-time
+                type: string
+              vms:
+                description: VMs is the per-VM migration status.
+                items:
+                  description: VMMigrationStatus captures the migration state for
+                    a single VM.
+                  properties:
+                    completed:
+                      description: Completed is the timestamp when migration of this
+                        VM finished.
+                      format: date-time
+                      type: string
+                    dataVolumeNames:
+                      description: |-
+                        DataVolumeNames is the list of CDI DataVolume names created for disk import.
+                        Used for idempotent reconciliation and cleanup.
+                      items:
+                        type: string
+                      type: array
+                    error:
+                      description: Error contains any error message from a failed
+                        phase.
+                      type: string
+                    id:
+                      description: ID is the UUID of the Nutanix VM.
+                      type: string
+                    imageUUIDs:
+                      description: |-
+                        ImageUUIDs is the list of Nutanix image UUIDs created from snapshot disks.
+                        Used for idempotent reconciliation and cleanup.
+                      items:
+                        type: string
+                      type: array
+                    name:
+                      description: Name is the display name of the VM.
+                      type: string
+                    originalPowerState:
+                      description: |-
+                        OriginalPowerState records the VM's power state before migration started.
+                        Used to restore state on failure.
+                      type: string
+                    phase:
+                      description: Phase is the current phase in the migration pipeline
+                        for this VM.
+                      enum:
+                      - Pending
+                      - PreHook
+                      - StorePowerState
+                      - PowerOff
+                      - WaitForPowerOff
+                      - CreateSnapshot
+                      - ExportDisks
+                      - ImportDisks
+                      - CreateVM
+                      - StartVM
+                      - PostHook
+                      - Cleanup
+                      - Completed
+                      - Failed
+                      - Cancelled
+                      type: string
+                    snapshotUUID:
+                      description: |-
+                        SnapshotUUID is the UUID of the Nutanix recovery point created for this VM.
+                        Used for idempotent reconciliation.
+                      type: string
+                    started:
+                      description: Started is the timestamp when migration of this
+                        VM began.
+                      format: date-time
+                      type: string
+                    taskUUID:
+                      description: |-
+                        TaskUUID is the UUID of the current in-progress Nutanix async task.
+                        Used for idempotent reconciliation.
+                      type: string
+                    warm:
+                      description: Warm tracks warm migration-specific progress.
+                      properties:
+                        cumulativeBytes:
+                          description: CumulativeBytes is the total bytes transferred
+                            across all rounds.
+                          format: int64
+                          type: integer
+                        lastDeltaBytes:
+                          description: LastDeltaBytes is the size of the last delta
+                            transfer.
+                          format: int64
+                          type: integer
+                        precopyRounds:
+                          description: PrecopyRounds is the number of precopy rounds
+                            completed.
+                          type: integer
+                      type: object
+                  required:
+                  - id
+                  type: object
+                type: array
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
