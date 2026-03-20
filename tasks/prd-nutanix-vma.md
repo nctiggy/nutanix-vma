@@ -11,7 +11,7 @@ The operator follows the Forklift model: Kubernetes-native CRDs for Provider, Pl
 ## 2. Goals
 
 1. **Cold migration of Nutanix AHV VMs to KubeVirt** -- power off source VM, export disk images, import into KubeVirt PVCs via CDI, create VirtualMachine CR, start VM.
-2. **Warm migration with minimal downtime** -- use Nutanix v4 CBT/CRT APIs for incremental block sync while the source VM runs, then a brief cutover window for the final delta.
+2. **Warm migration with minimal downtime (EXPERIMENTAL/GATED)** -- use Nutanix v4 CBT/CRT APIs for incremental block sync while the source VM runs, then a brief cutover window for the final delta. NOTE: Warm migration depends on unverified assumptions about the Nutanix Image Service (HTTP Range header support for partial disk reads). This feature is gated behind real-cluster validation. Cold migration is the committed, production-ready path.
 3. **Kubernetes-native declarative API** -- CRDs for Provider, MigrationPlan, Migration, NetworkMap, StorageMap, and Hook. Users define desired state, operator reconciles.
 4. **Automated VM metadata translation** -- map Nutanix CPU, memory, firmware, disks, NICs to KubeVirt VirtualMachine spec with no manual configuration.
 5. **Pre-flight validation** -- detect incompatible VMs (GPU passthrough, Volume Groups, unsupported configurations) before migration starts.
@@ -78,7 +78,7 @@ The operator follows the Forklift model: Kubernetes-native CRDs for Provider, Pl
 6. The system must list storage containers via the v2 Prism Element API (`GET /api/nutanix/v2.0/storage_containers`).
 7. The system must power on/off VMs via the v4 VMM API.
 8. The system must create and delete recovery points (snapshots) via the v4 Data Protection API (`POST /api/dataprotection/v4.0/config/recovery-points`).
-9. The system must create images from vDisk snapshots and download image data via the v3 Images API (`GET /api/nutanix/v3/images/{uuid}/file`).
+9. The system must create images from vDisk snapshots and download image data via the v3 Images API (`GET /api/nutanix/v3/images/{uuid}/file`). NOTE: The exact flow for creating an image from a recovery point's vDisk is unverified. The primary path assumes `POST /api/vmm/v4.0/content/images` with a `data_source_reference`. The fallback path (if direct reference fails) is: clone VM from recovery point -> create image from clone's disk -> delete clone. Both paths must be implemented; the mock server supports both.
 10. The system must compute changed block regions via the v4 CBT/CRT API (two-step: PC cluster discovery `POST .../recovery-points/{uuid}/$actions/compute-changed-regions` -> PE data retrieval `GET .../recovery-points/{uuid}/changed-regions`).
 11. The system must handle CBT JWT token refresh (15-minute expiry) during paginated region queries.
 12. The system must poll Nutanix async task status (`GET /api/prism/v4.0/config/tasks/{uuid}`) for operations that return task UUIDs (power off, snapshot create, image create). This is required because Nutanix API operations are asynchronous.
@@ -107,12 +107,14 @@ The operator follows the Forklift model: Kubernetes-native CRDs for Provider, Pl
 29. The Migration CR must have a finalizer to prevent deletion while the pipeline is running (which would leak Nutanix snapshots and images). The Provider CR must have a finalizer to prevent deletion while Plans reference it.
 30. DataVolumes and PVCs created by the migration must have owner references to the Migration CR for garbage collection. KubeVirt VirtualMachine CRs must NOT have owner references (they must outlive the Migration CR).
 31. All CRDs must define standard `metav1.Condition` types: Provider (`Connected`, `InventoryReady`), Plan (`Valid`, `Ready`), Migration (`Executing`, `Succeeded`, `Failed`).
+32. The migration controller must be **idempotent and resumable**. On operator restart, reconciliation must detect existing resources (DataVolumes, PVCs, Nutanix snapshots/images/tasks) and resume from the current phase rather than creating duplicates. Each phase must check for already-created resources before creating new ones. Nutanix task UUIDs must be persisted in the Migration status so they can be re-polled after restart.
 
 ### FR-4: Cold Migration Pipeline
 
 32. The pipeline phases must execute in order: PreHook -> StorePowerState -> PowerOff -> WaitForPowerOff -> CreateSnapshot -> ExportDisks -> ImportDisks (CDI DataVolume) -> CreateVM -> StartVM -> PostHook -> Cleanup -> Completed.
 33. The system must create a Nutanix Image Service credential secret (with `accessKeyId` and `secretKey` fields matching CDI's HTTP Basic Auth format) in the target namespace for CDI to authenticate to Prism Central. This secret must be created before DataVolumes and cleaned up after import.
-34. The system must create CDI DataVolumes with HTTP source pointing to the Nutanix Image Service download URL for each VM disk. The DataVolume must propagate `volumeMode` and `accessMode` from the StorageMap.
+34. If the Provider has a custom CA certificate (`ca.crt` in the provider Secret), the system must create a ConfigMap containing the CA cert in the target namespace and reference it as `certConfigMap` on the CDI DataVolume's HTTP source. This allows CDI importer pods to trust self-signed Prism Central certificates. The ConfigMap must be cleaned up after import.
+35. The system must create CDI DataVolumes with HTTP source pointing to the Nutanix Image Service download URL for each VM disk. The DataVolume must propagate `volumeMode` and `accessMode` from the StorageMap.
 35. The system must translate Nutanix VM metadata to a KubeVirt VirtualMachine CR:
     - CPU topology preserved: `num_sockets` -> `spec.domain.cpu.sockets`, `num_vcpus_per_socket` -> `spec.domain.cpu.cores`, `num_threads_per_core` -> `spec.domain.cpu.threads` (default 1 if absent)
     - Memory: `memory_size_mib` -> `spec.domain.resources.requests.memory`
@@ -126,7 +128,9 @@ The operator follows the Forklift model: Kubernetes-native CRDs for Provider, Pl
 39. On failure at any phase, the system must clean up partial resources (DataVolumes, PVCs, images, snapshots, credential secrets) and restore the source VM to its original power state.
 40. The system must respect `maxInFlight` concurrency limits when migrating multiple VMs.
 
-### FR-5: Warm Migration Pipeline
+### FR-5: Warm Migration Pipeline (EXPERIMENTAL -- Gated Behind Real-Cluster Validation)
+
+**WARNING**: This entire section depends on unverified assumptions about the Nutanix Image Service API (specifically HTTP Range header support for partial disk reads). The CBT API returns changed-block **metadata** (which byte ranges changed), but does NOT return the block **data** itself. Reading the actual changed bytes requires either: (a) HTTP Range requests on the Image Service download endpoint, or (b) direct NFS access to CVM storage. Neither is confirmed without real cluster access. If neither works, warm migration falls back to downloading the full recovery-point image per precopy round, which dramatically reduces its benefit for large disks. **Do not treat warm migration as a committed, production-ready feature until validated against a real Nutanix cluster.**
 
 41. The warm migration must create the target PVC/DataVolume at full disk size before the initial bulk copy (not during cutover).
 42. The initial bulk copy must use a CDI DataVolume with HTTP source, same as cold migration.
@@ -144,9 +148,11 @@ The operator follows the Forklift model: Kubernetes-native CRDs for Provider, Pl
 51. The system must flag VMs with GPU passthrough as unsupported (warning, not blocking).
 52. The system must flag VMs with Volume Group references as unsupported (error, blocking).
 53. The system must flag VMs with unsupported NIC types (NETWORK_FUNCTION_NIC) as error.
-54. The system must detect MAC address conflicts with existing KubeVirt VMs in the target namespace.
-55. The system must validate that the target namespace exists.
-56. The system must validate that disks with `adapter_type: IDE` are mapped to `disk.bus: sata` (since KubeVirt deprecated IDE bus support).
+54. The system must flag VMs with DIRECT_NIC as warning ("requires SR-IOV device plugin and NetworkAttachmentDefinition on target cluster").
+55. The system must detect MAC address conflicts with existing KubeVirt VMs in the target namespace.
+56. The system must validate that the target namespace exists.
+57. The system must validate that disks with `adapter_type: IDE` are mapped to `disk.bus: sata` (since KubeVirt deprecated IDE bus support).
+58. **Target-side validation**: The system must validate that each StorageClass referenced in the StorageMap exists on the target cluster. The system must validate that each Multus NetworkAttachmentDefinition referenced in the NetworkMap exists in the specified namespace. The system must verify that CDI is installed (check for the `cdi.kubevirt.io` API group) and KubeVirt is installed (check for the `kubevirt.io` API group).
 
 ### FR-7: Hooks
 
@@ -189,6 +195,8 @@ The operator follows the Forklift model: Kubernetes-native CRDs for Provider, Pl
 - **Bidirectional migration**: No KubeVirt -> Nutanix migration.
 - **Automatic NGT removal**: NGT uninstallation is left to pre-migration hooks or manual action.
 - **CD-ROM / ISO migration**: CDROM entries in VM disk_list are skipped. Only DISK-type entries are migrated.
+- **Static IP preservation**: Guest-level network configuration (static IPs, DNS settings) persists on the migrated disk. The operator does not inject or modify guest network config. If the VM had a static IP on Nutanix, that configuration will remain in the guest OS and must be manually updated if the target network differs.
+- **PXE / network boot migration**: VMs configured to boot from network are not supported as a migration target.
 
 ## 6. Design Considerations
 
@@ -440,7 +448,7 @@ The AGENTS.md file must contain the following sections for Ralph to operate effe
 | Async task status | v4 Prism | `/api/prism/v4.0/config/tasks/{uuid}` | Prism Central + Element |
 | Cluster list | v4 Clustermgmt | `/api/clustermgmt/v4.0/config/clusters` | Prism Central |
 | Image create/download | v3 | `/api/nutanix/v3/images/{uuid}/file` | Prism Central |
-| Storage containers | v2 | `/api/nutanix/v2.0/storage_containers` | Prism Element |
+| Storage containers | v2 | `/api/nutanix/v2.0/storage_containers` (NOTE: Nutanix docs inconsistently use underscores vs hyphens; validate against real cluster) | Prism Element |
 
 ### Known Constraints & Risks
 
@@ -451,6 +459,8 @@ The AGENTS.md file must contain the following sections for Ralph to operate effe
 5. **Nutanix Go SDK instability** -- deliberately avoided; custom HTTP client used instead.
 6. **CDI importer needs network access to Prism Central** -- CDI pods pull disk data via HTTP from Prism. If K8s worker nodes lack routes to the Nutanix management network, migration will fail. This is a deployment prerequisite, not something the operator can fix.
 7. **Warm migration delta data source** (CRITICAL RISK) -- The CBT API tells you WHICH blocks changed but not their contents. Reading block data requires the Image Service download endpoint with HTTP Range headers. If Range headers are NOT supported by the real Nutanix API, warm migration falls back to downloading the full recovery point image and extracting changed ranges, which reduces the benefit for large disks. This must be validated with a real cluster.
+8. **Prism Element authentication** (UNVERIFIED) -- The PRD assumes PC credentials propagate to PE API calls. If separate PE credentials are required, the Provider CRD will need an additional `peSecretRef` or per-cluster credential map. The mock assumes PC creds work for PE. This must be validated with a real cluster.
+9. **Cold export path assumption** (UNVERIFIED) -- Creating an image directly from a recovery-point vDisk via `data_source_reference` may require an intermediate clone step (clone VM from recovery point -> create image from clone -> delete clone). The implementation includes both paths with automatic fallback.
 
 ### GitHub Repository
 
@@ -461,12 +471,13 @@ The AGENTS.md file must contain the following sections for Ralph to operate effe
 
 ## 8. Success Metrics
 
-1. **Cold migration works end-to-end** -- a VM on the mock Nutanix API is fully migrated to a KubeVirt VirtualMachine CR in envtest, with all metadata correctly translated.
-2. **Warm migration works end-to-end** -- CBT-based incremental sync completes against the mock API, delta transfer writes correct blocks, cutover produces a working VM.
+1. **Cold migration controller logic works** -- integration tests (envtest + mock Nutanix API) verify: correct CRs created (DataVolumes, VirtualMachine), correct metadata translation, correct status tracking through all pipeline phases. NOTE: envtest does NOT run CDI/KubeVirt controllers, so integration tests verify CR creation and status updates, not actual data import or VM boot. Full pipeline validation requires E2E tests against real infrastructure.
+2. **Warm migration controller logic works (experimental)** -- integration tests verify CBT-based precopy loop creates correct snapshots, computes deltas, and tracks progress. Delta transfer pod spec is correctly generated. Gated behind real-cluster validation for the data-source assumption.
 3. **All tests pass in CI** -- unit test coverage >80% on client, builder, validation. Integration tests verify controller reconciliation. GitHub Actions green.
 4. **Operator deploys and runs** -- `make deploy` installs CRDs and starts the operator on any vanilla K8s cluster with KubeVirt + CDI.
 5. **kubectl plugin works** -- `kubectl vma inventory`, `kubectl vma status` produce correct output.
 6. **Each Ralph iteration produces buildable, testable code** -- `make build && make test` passes after every story.
+7. **E2E tests validate full pipeline** (when real infrastructure is available) -- cold migration of a Linux VM boots successfully on KubeVirt with correct CPU/memory/disk/network configuration.
 
 ## 9. Open Questions
 
@@ -548,7 +559,7 @@ Define CRD types for MigrationPlan, Migration, and Hook in `api/v1alpha1/`. Thes
 Implement the `NutanixClient` interface in `internal/nutanix/client.go` with ALL method signatures. The concrete `httpClient` struct must implement ALL methods -- methods not yet implemented return `errors.New("not implemented: <MethodName>")`. Implement authentication, TLS config, base HTTP request/response handling, retry logic, and async task polling.
 
 **Implementation details:**
-- `client.go`: `NutanixClient` interface (all methods from Section 6), `ClientConfig` struct, `NewClient()` factory, `httpClient` struct with stub implementations
+- `client.go`: `NutanixClient` interface (all methods from Section 6 plus `CloneVMFromRecoveryPoint` and `DeleteVM` for the fallback export path), `ClientConfig` struct, `NewClient()` factory, `httpClient` struct with stub implementations
 - `auth.go`: HTTP Basic Auth, custom TLS transport, InsecureSkipVerify
 - `tasks.go`: `pollTask(ctx, taskUUID)` helper that polls `GET /api/prism/v4.0/config/tasks/{uuid}` until SUCCEEDED/FAILED
 - Retry: exponential backoff on 429/5xx, configurable max retries
@@ -590,9 +601,10 @@ Replace stub implementations for recovery point and image operations.
 
 **Acceptance Criteria:**
 - Recovery point CRUD with task polling
-- Image creation from vDisk reference
-- Image download streams to io.Writer
-- Unit tests for each method
+- Image creation from vDisk reference (primary path)
+- Fallback path: `CloneVMFromRecoveryPoint()` + image creation from clone disk + clone cleanup
+- Image download streams to io.Writer (not buffering full image in memory)
+- Unit tests for each method including the fallback path
 
 ### Story 6: Nutanix API Client -- Networking, Storage & Cluster Discovery
 **Priority: P0** | **Depends on: Story 4**
@@ -704,7 +716,7 @@ Implement pre-flight validation.
 **Implementation details:**
 - `internal/validation/validator.go`: `Validate(vm *nutanix.VM, networkMap, storageMap, existingVMs) []Concern`
 - `Concern` struct: Category (Error, Warning, Info), Message string
-- Rules: unmapped storage container (Error), unmapped subnet (Error), GPU present (Warning), Volume Group present (Error), NETWORK_FUNCTION_NIC (Error), MAC conflict (Warning), target namespace missing (Error), IDE disk present (Info -- will be mapped to sata)
+- Rules: unmapped storage container (Error), unmapped subnet (Error), GPU present (Warning), Volume Group present (Error), NETWORK_FUNCTION_NIC (Error), DIRECT_NIC (Warning -- requires SR-IOV), MAC conflict (Warning), target namespace missing (Error), IDE disk present (Info -- will be mapped to sata), StorageClass not found (Error), Multus NAD not found (Error), CDI not installed (Error), KubeVirt not installed (Error)
 
 **Acceptance Criteria:**
 - Each validation rule implemented and tested
@@ -713,7 +725,7 @@ Implement pre-flight validation.
 - Unit tests for every rule + combination scenarios
 
 ### Story 11: Integration Test Harness + Provider Controller
-**Priority: P0** | **Depends on: Story 2a, Story 3, Story 8a**
+**Priority: P0** | **Depends on: Story 2a, Story 3, Story 4, Story 6, Story 8a**
 
 Set up the integration test harness (envtest + mock server + scheme registration) and implement the Provider controller.
 
@@ -756,26 +768,28 @@ Implement the migration controller skeleton: state machine, phase tracking, conc
 **Implementation details:**
 - `internal/controller/migration_controller.go`: Reconcile Migration CRs. Create per-VM state machines. Phase enum (Pending, PreHook, StorePowerState, PowerOff, WaitForPowerOff, CreateSnapshot, ExportDisks, ImportDisks, CreateVM, StartVM, PostHook, Cleanup, Completed, Failed). Advance phases, update status. MaxInFlight scheduler. Cancellation (check cancel list before each phase). Finalizer. Error handler (set Failed, trigger cleanup).
 - All phases return `PhaseResult{Completed: true}` (stubs)
+- **Idempotency**: Each phase must check for already-created resources before creating new ones. Nutanix task UUIDs, snapshot UUIDs, and image UUIDs must be persisted in the Migration status so they can be re-polled after operator restart. On reconcile, the controller must detect existing resources and resume from the current phase.
 
 **Acceptance Criteria:**
 - State machine advances through all phases (stubs)
-- Per-VM phase tracking in Migration status
+- Per-VM phase tracking in Migration status with persisted resource UUIDs
 - MaxInFlight limits concurrent VMs
 - Cancellation stops and cleans up individual VMs
 - Finalizer prevents deletion during running migration
+- Idempotent: re-reconciling a Migration in any phase does not create duplicate resources
 - `make build && make test` passes
 
 ### Story 13b: Migration Controller -- Disk Transfer Phases
-**Priority: P0** | **Depends on: Story 13a, Story 9**
+**Priority: P0** | **Depends on: Story 13a, Story 5, Story 9**
 
 Implement the disk transfer phases: PowerOff, WaitForPowerOff, CreateSnapshot, ExportDisks (create Nutanix image from snapshot), ImportDisks (create CDI DataVolume). Implement the transfer manager.
 
 **Implementation details:**
 - Replace PowerOff stub: call `client.PowerOffVM()`, store original power state
 - Replace CreateSnapshot stub: call `client.CreateRecoveryPoint()`
-- Replace ExportDisks stub: call `client.CreateImageFromDisk()` for each disk
+- Replace ExportDisks stub: call `client.CreateImageFromDisk()` for each disk. Implement fallback: if direct image creation from recovery point vDisk fails, clone VM from recovery point, create image from clone's disk, then delete clone.
 - `internal/transfer/manager.go`: Transfer orchestration
-- `internal/transfer/datavolume.go`: Create CDI DataVolume with HTTP source URL pointing to `https://<PC>/api/nutanix/v3/images/{uuid}/file`. Create CDI credential secret (accessKeyId/secretKey format). Set owner reference to Migration CR. Propagate volumeMode/accessMode from StorageMap.
+- `internal/transfer/datavolume.go`: Create CDI DataVolume with HTTP source URL pointing to `https://<PC>/api/nutanix/v3/images/{uuid}/file`. Create CDI credential secret (accessKeyId/secretKey format). If Provider has custom CA, create ConfigMap with CA cert and set `certConfigMap` on the DataVolume HTTP source. Set owner reference to Migration CR. Propagate volumeMode/accessMode from StorageMap.
 - Replace ImportDisks stub: create DataVolumes, monitor DV progress (poll status), report percentage
 
 **Acceptance Criteria:**
@@ -882,7 +896,7 @@ Add events, structured logging, and Prometheus metrics.
 - Integration test verifies events are emitted after migration
 
 ### Story 18: E2E Test Framework
-**Priority: P2** | **Depends on: Story 13c**
+**Priority: P2** | **Depends on: Story 13c, Story 14 (for warm E2E case)**
 
 Build the E2E test suite for real infrastructure.
 
