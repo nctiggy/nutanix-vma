@@ -247,3 +247,31 @@ Iteration 2 [2026-03-20T05:36:01Z]: Nutanix API Client -- VM Operations COMPLETE
 ### Issues: None
 ---
 Iteration 3 [2026-03-20T05:45:08Z]: Nutanix API Client -- Snapshots & Images COMPLETED. CI passed (run 23330729625). Attempt 1.
+
+---
+
+## US-007: Nutanix API Client -- CBT/CRT
+
+### Status: Implemented, pending CI verification
+
+### What was done:
+- Created internal/nutanix/cbt.go: DiscoverClusterForCBT (POST to PC /api/storage/v4.0/config/changed-regions/$actions/discover-cluster, returns CBTClusterInfo with PE URL + JWT token), GetChangedRegions (GET to PE /api/storage/v4.0/config/changed-regions with JWT in NTNX_IGW_SESSION cookie, paginated via nextOffset, query params: vmExtId, snapshotExtId, baseSnapshotExtId, offset, length, blockSize)
+- Implemented JWT token refresh: httpClient stores discovery results in cbtTokens map (sync.RWMutex protected). GetChangedRegions checks cached token age; if > 12 minutes, triggers re-discovery automatically before querying changed regions
+- Added cbtMu/cbtTokens fields to httpClient struct in client.go, added sync import
+- Removed last 2 stub methods from client.go (DiscoverClusterForCBT, GetChangedRegions) -- all 20 NutanixClient interface methods are now fully implemented
+- Removed TestStubMethods_ReturnNotImplemented and assertNotImplemented helper from client_test.go (no more stubs)
+- Created cbt_test.go: discover success with body verification, incomplete response (missing PE URL/JWT/both), API error, single page changed regions, multi-page with nextOffset, zero regions, API error, token refresh (stale cache triggers re-discovery), no refresh when fresh, PE URL trailing slash handling
+
+### Verification:
+- `make lint` passes (0 issues)
+- `make build` passes
+- `make test` passes (88.1% coverage on internal/nutanix)
+
+### Patterns discovered:
+- GetChangedRegions sends requests to PE URL (not PC) using JWT cookie auth instead of Basic Auth -- cannot use doRequest/doJSON which add Basic Auth headers; must construct request manually
+- CBT JWT tokens expire after 15 minutes; refresh at 12 minutes for safety margin
+- httptest server handler's r.URL.Scheme is empty -- cannot construct full URLs from request in handlers; use closure variable with server.URL instead
+- sync.RWMutex for token cache: RLock for reads (GetChangedRegions check), Lock for writes (DiscoverClusterForCBT update)
+- When all stubs are removed, the stub test and assertNotImplemented helper become dead code -- remove them to avoid lint warnings
+
+### Issues: None
