@@ -245,3 +245,5 @@ Iteration 2 [2026-03-20T05:36:01Z]: Nutanix API Client -- VM Operations COMPLETE
 - goconst counts string occurrences across ALL test files in a package -- avoid inline string comparisons in auth handler checks when auth is already tested elsewhere
 
 ### Issues: None
+---
+Iteration 3 [2026-03-20T05:45:08Z]: Nutanix API Client -- Snapshots & Images COMPLETED. CI passed (run 23330729625). Attempt 1.

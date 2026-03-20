@@ -4,11 +4,11 @@
   "totalDurationSeconds": 1825,
   "totalDurationHuman": "30m 25s",
   "maxIterations": 30,
-  "totalIterations": 4,
-  "storiesCompleted": 4,
+  "totalIterations": 5,
+  "storiesCompleted": 5,
   "storiesRemaining": 20,
-  "totalCIRuns": 4,
-  "ciPasses": 4,
+  "totalCIRuns": 5,
+  "ciPasses": 5,
   "ciFails": 0,
   "ciSkipped": 0,
   "noCommitIterations": 0,
@@ -60,6 +60,18 @@
       "endTime": "2026-03-20T05:25:05Z",
       "durationSeconds": 559,
       "durationHuman": "9m 19s",
+      "attemptNumber": 1
+    },
+    {
+      "iteration": 2,
+      "storyId": "US-004",
+      "storyTitle": "Nutanix API Client -- VM Operations",
+      "result": "ci_pass",
+      "ciRunId": "23330526435",
+      "startTime": "2026-03-20T05:25:09Z",
+      "endTime": "2026-03-20T05:36:01Z",
+      "durationSeconds": 652,
+      "durationHuman": "10m 52s",
       "attemptNumber": 1
     }
   ]
