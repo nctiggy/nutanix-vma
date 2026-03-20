@@ -191,7 +191,8 @@
       ],
       "priority": 11,
       "passes": false,
-      "notes": "Depends on Story 2b and Story 4."
+      "notes": "Depends on Story 2b and Story 4.",
+      "status": "completed"
     },
     {
       "id": "US-010",

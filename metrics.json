@@ -4,11 +4,11 @@
   "totalDurationSeconds": 1825,
   "totalDurationHuman": "30m 25s",
   "maxIterations": 30,
-  "totalIterations": 9,
-  "storiesCompleted": 9,
+  "totalIterations": 10,
+  "storiesCompleted": 10,
   "storiesRemaining": 20,
-  "totalCIRuns": 9,
-  "ciPasses": 9,
+  "totalCIRuns": 10,
+  "ciPasses": 10,
   "ciFails": 0,
   "ciSkipped": 0,
   "noCommitIterations": 0,
@@ -120,6 +120,18 @@
       "endTime": "2026-03-20T06:22:01Z",
       "durationSeconds": 850,
       "durationHuman": "14m 10s",
+      "attemptNumber": 1
+    },
+    {
+      "iteration": 7,
+      "storyId": "US-008b",
+      "storyTitle": "Mock Nutanix API Server -- Snapshots, Images, CBT",
+      "result": "ci_pass",
+      "ciRunId": "23331942762",
+      "startTime": "2026-03-20T06:22:04Z",
+      "endTime": "2026-03-20T06:38:06Z",
+      "durationSeconds": 962,
+      "durationHuman": "16m 2s",
       "attemptNumber": 1
     }
   ]

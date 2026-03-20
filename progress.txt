@@ -383,3 +383,49 @@ Iteration 6 [2026-03-20T06:22:01Z]: Mock Nutanix API Server -- Core COMPLETED. C
 ### Issues: None
 ---
 Iteration 7 [2026-03-20T06:38:06Z]: Mock Nutanix API Server -- Snapshots, Images, CBT COMPLETED. CI passed (run 23331942762). Attempt 1.
+
+---
+
+## US-010: Validation Engine
+
+### Status: Implemented, pending CI verification
+
+### What was done:
+- Created internal/validation/validator.go: Validate(ctx, vm, opts) returns []Concern with 13 validation rules
+- Source-side rules (always run, no K8s client needed):
+  - Unmapped storage container (Error): checks each disk's StorageContainerRef against StorageMap by ID or name, deduplicates by container
+  - Unmapped subnet (Error): checks each NIC's NetworkRef against NetworkMap by ID or name, deduplicates by subnet
+  - GPU present (Warning): flags VMs with GPU attachments requiring manual target configuration
+  - Volume Group disk (Error): flags disks with nil BackingInfo or nil StorageContainerRef (not CDROM)
+  - NETWORK_FUNCTION_NIC (Error): flags unmigrable network function NICs
+  - DIRECT_NIC (Warning): flags passthrough NICs requiring SR-IOV on target
+  - MAC conflict (Warning): checks NIC MACs against ExistingMACs map (lowercase comparison)
+  - IDE disk (Info): flags IDE bus disks that will be mapped to SATA on KubeVirt
+- Target-side rules (skip gracefully when client.Reader is nil):
+  - Namespace missing (Error): checks target namespace exists via client.Get
+  - StorageClass not found (Error): collects unique StorageClasses needed by VM's mapped disks, checks each exists
+  - Multus NAD not found (Error): checks NetworkAttachmentDefinition exists for multus-mapped NICs (unstructured Get)
+  - CDI not installed (Error): checks for datavolumes.cdi.kubevirt.io CRD (unstructured Get)
+  - KubeVirt not installed (Error): checks for virtualmachines.kubevirt.io CRD (unstructured Get)
+- HasErrors(concerns) helper returns true if any concern has Error category
+- ValidationOptions: NetworkMap, StorageMap, ExistingVMs, ExistingMACs, TargetNamespace, Client (client.Reader)
+- Created validator_test.go with mockReader implementing client.Reader (type-switch dispatch for Namespace, StorageClass, unstructured NAD/CRD), 25+ test cases covering all rules plus integration scenarios
+- Test helpers: makeVM, makeDisk, makeNIC, makeStorageMap, makeNetworkMap, requireConcerns, requireCategory, requireMessageContains
+
+### Verification:
+- `make build` passes
+- `make test` passes (92.6% coverage on internal/validation)
+- `make lint` passes (0 issues)
+
+### Patterns discovered:
+- client.Reader (not client.Client) for validation -- only Get is needed, and client.Client satisfies client.Reader naturally
+- mockReader with type-switch dispatch: handles typed objects (Namespace, StorageClass) and unstructured (NAD, CRD) via GVK inspection
+- staticcheck S1034: use `switch o := obj.(type)` to eliminate redundant type assertions inside cases
+- unparam linter flags test helper parameters that always receive the same value -- simplify helpers by inlining constants
+- unstructured.Unstructured for CRD and NAD existence checks avoids importing apiextensions or multus API packages
+- CRD existence check pattern: Get unstructured with apiextensions.k8s.io/v1/CustomResourceDefinition GVK + CRD name
+- Storage/network mapping deduplication prevents duplicate concerns when multiple disks use the same container
+
+### Issues: None
+---
+Iteration 8 [2026-03-20T06:55:51Z]: VM Builder -- Metadata Translation COMPLETED. CI passed (run 23332359865). Attempt 1.
