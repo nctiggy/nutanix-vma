@@ -1,0 +1,17 @@
+{
+  "runStart": "2026-03-20T04:33:36Z",
+  "runEnd": null,
+  "totalDurationSeconds": null,
+  "totalDurationHuman": null,
+  "maxIterations": 30,
+  "totalIterations": 0,
+  "storiesCompleted": 0,
+  "storiesRemaining": 0,
+  "totalCIRuns": 0,
+  "ciPasses": 0,
+  "ciFails": 0,
+  "ciSkipped": 0,
+  "noCommitIterations": 0,
+  "firstPassRate": null,
+  "iterations": []
+}

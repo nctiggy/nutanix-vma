@@ -19,7 +19,8 @@
       ],
       "priority": 1,
       "passes": false,
-      "notes": "kubebuilder generates ~20 scaffolding files automatically. The 5-8 file limit applies to hand-written files only. kubebuilder v4 places entry point at cmd/main.go, NOT cmd/operator/main.go."
+      "notes": "kubebuilder generates ~20 scaffolding files automatically. The 5-8 file limit applies to hand-written files only. kubebuilder v4 places entry point at cmd/main.go, NOT cmd/operator/main.go.",
+      "status": "completed"
     },
     {
       "id": "US-002a",
