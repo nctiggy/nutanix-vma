@@ -238,26 +238,6 @@ func sleepWithContext(ctx context.Context, d time.Duration) {
 
 // --- Stub implementations for methods to be implemented in later stories ---
 
-func (c *httpClient) ListVMs(_ context.Context) ([]VM, error) {
-	return nil, errors.New("not implemented: ListVMs")
-}
-
-func (c *httpClient) GetVM(_ context.Context, _ string) (*VM, error) {
-	return nil, errors.New("not implemented: GetVM")
-}
-
-func (c *httpClient) PowerOffVM(_ context.Context, _ string) error {
-	return errors.New("not implemented: PowerOffVM")
-}
-
-func (c *httpClient) PowerOnVM(_ context.Context, _ string) error {
-	return errors.New("not implemented: PowerOnVM")
-}
-
-func (c *httpClient) GetVMPowerState(_ context.Context, _ string) (PowerState, error) {
-	return "", errors.New("not implemented: GetVMPowerState")
-}
-
 func (c *httpClient) CreateRecoveryPoint(_ context.Context, _ string, _ string) (string, error) {
 	return "", errors.New("not implemented: CreateRecoveryPoint")
 }

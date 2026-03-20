@@ -152,3 +152,28 @@ Iteration 5: US-003 lint fix applied.
 ### Patterns discovered:
 - golangci-lint errcheck flags `resp.Body.Close()` in both production and test code -- always use `_ = resp.Body.Close()` or wrap in closure for defer
 - Unexported methods/consts flagged as unused if not called within the package -- exporting them (even in internal/) avoids the lint error while preserving the API for future stories
+
+---
+
+## US-004: Nutanix API Client -- VM Operations
+
+### Status: Implemented, pending CI verification
+
+### What was done:
+- Created internal/nutanix/vm.go: ListVMs (paginated via $top/$skip, 500 per page), GetVM, PowerOffVM (POST + task poll), PowerOnVM (POST + task poll), GetVMPowerState
+- Typed response wrappers: vmListResponse, vmResponse, taskRefResponse (avoid generic any deserialization)
+- Removed 5 VM stub methods from client.go
+- Updated stub test in client_test.go to skip VM methods
+- Created internal/nutanix/vm_test.go with tests: single page, paginated (>500 VMs), empty result, GetVM full spec, GetVM not found, PowerOff success, PowerOn success, PowerOff task failure, GetVMPowerState ON/OFF, full VM spec with multi-disk+CDROM+GPU+multi-NIC
+
+### Verification:
+- `make lint` passes (0 issues)
+- `make build` passes
+- `make test` passes (86.8% coverage on internal/nutanix)
+
+### Patterns discovered:
+- v4 API list pagination: use $top/$skip query params, check metadata.totalAvailableResults
+- Power operations return task reference in data.extId, must poll via PollTask
+- GetVMPowerState reuses GetVM (no separate API endpoint)
+- POST power operations should send empty body `{}` to be API-correct and avoid unparam lint
+- golangci-lint unparam checks if function params always receive same value -- pass real bodies to avoid

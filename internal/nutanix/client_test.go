@@ -390,20 +390,7 @@ func TestStubMethods_ReturnNotImplemented(t *testing.T) {
 
 	ctx := context.Background()
 
-	_, err = client.ListVMs(ctx)
-	assertNotImplemented(t, err, "ListVMs")
-
-	_, err = client.GetVM(ctx, "uuid")
-	assertNotImplemented(t, err, "GetVM")
-
-	err = client.PowerOffVM(ctx, "uuid")
-	assertNotImplemented(t, err, "PowerOffVM")
-
-	err = client.PowerOnVM(ctx, "uuid")
-	assertNotImplemented(t, err, "PowerOnVM")
-
-	_, err = client.GetVMPowerState(ctx, "uuid")
-	assertNotImplemented(t, err, "GetVMPowerState")
+	// VM methods are now implemented in vm.go -- skip them here
 
 	_, err = client.CreateRecoveryPoint(ctx, "uuid", "name")
 	assertNotImplemented(t, err, "CreateRecoveryPoint")
