@@ -1,18 +1,18 @@
 {
   "runStart": "2026-03-20T04:33:36Z",
-  "runEnd": "2026-03-20T05:04:01Z",
-  "totalDurationSeconds": 1825,
-  "totalDurationHuman": "30m 25s",
+  "runEnd": "2026-03-20T11:40:50Z",
+  "totalDurationSeconds": 23104,
+  "totalDurationHuman": "6h 25m 4s",
   "maxIterations": 30,
-  "totalIterations": 22,
+  "totalIterations": 23,
   "storiesCompleted": 19,
-  "storiesRemaining": 20,
-  "totalCIRuns": 19,
+  "storiesRemaining": 4,
+  "totalCIRuns": 20,
   "ciPasses": 19,
-  "ciFails": 0,
+  "ciFails": 1,
   "ciSkipped": 0,
   "noCommitIterations": 3,
-  "firstPassRate": "100%",
+  "firstPassRate": "95%",
   "iterations": [
     {
       "iteration": 1,
@@ -277,6 +277,18 @@
       "durationSeconds": 1330,
       "durationHuman": "22m 10s",
       "attemptNumber": 3
+    },
+    {
+      "iteration": 20,
+      "storyId": "US-016",
+      "storyTitle": "kubectl-vma Plugin",
+      "result": "ci_fail",
+      "ciRunId": "23340137859",
+      "startTime": "2026-03-20T10:36:36Z",
+      "endTime": "2026-03-20T11:09:47Z",
+      "durationSeconds": 1991,
+      "durationHuman": "33m 11s",
+      "attemptNumber": 4
     }
   ]
 }

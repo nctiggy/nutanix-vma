@@ -1044,3 +1044,5 @@ Fix: Replace `mgr.GetEventRecorderFor("migration-controller")` with `mgr.GetEven
 - Pre-add finalizers to test objects to skip the finalizer-only reconcile step in unit tests
 - `DisableKeepAlives: true` on http.Transport prevents TIME_WAIT port accumulation when many short-lived clients connect to the same server
 - Integration test flakiness often manifests as "can't assign requested address" (ephemeral port exhaustion) or "the object has been modified" (resource version conflicts from concurrent reconcilers)
+---
+Iteration 1 [2026-03-20T14:03:57Z]: kubectl-vma Plugin COMPLETED. CI passed (run 23346271391). Attempt 5.
