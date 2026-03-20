@@ -154,7 +154,8 @@
       ],
       "priority": 9,
       "passes": false,
-      "notes": "Depends on Story 4 and Story 6 (needs nutanix types for response structures). At the 8-file limit -- keep handlers_network and handlers_storage small."
+      "notes": "Depends on Story 4 and Story 6 (needs nutanix types for response structures). At the 8-file limit -- keep handlers_network and handlers_storage small.",
+      "status": "completed"
     },
     {
       "id": "US-008b",

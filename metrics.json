@@ -4,11 +4,11 @@
   "totalDurationSeconds": 1825,
   "totalDurationHuman": "30m 25s",
   "maxIterations": 30,
-  "totalIterations": 7,
-  "storiesCompleted": 7,
+  "totalIterations": 8,
+  "storiesCompleted": 8,
   "storiesRemaining": 20,
-  "totalCIRuns": 7,
-  "ciPasses": 7,
+  "totalCIRuns": 8,
+  "ciPasses": 8,
   "ciFails": 0,
   "ciSkipped": 0,
   "noCommitIterations": 0,
@@ -96,6 +96,18 @@
       "endTime": "2026-03-20T05:56:46Z",
       "durationSeconds": 695,
       "durationHuman": "11m 35s",
+      "attemptNumber": 1
+    },
+    {
+      "iteration": 5,
+      "storyId": "US-007",
+      "storyTitle": "Nutanix API Client -- CBT/CRT",
+      "result": "ci_pass",
+      "ciRunId": "23331232731",
+      "startTime": "2026-03-20T05:56:49Z",
+      "endTime": "2026-03-20T06:07:48Z",
+      "durationSeconds": 658,
+      "durationHuman": "10m 58s",
       "attemptNumber": 1
     }
   ]
