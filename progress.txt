@@ -893,3 +893,27 @@ Iteration 19 [2026-03-20T10:36:36Z]: No commits produced for kubectl-vma Plugin 
 - Histogram exponential buckets for migration duration: 60*2^n gives 1m, 2m, 4m, 8m, ... up to ~17h
 
 ### Issues: None (hook test timeout is pre-existing, not caused by this change)
+---
+Iteration 20 [2026-03-20T11:09:49Z]: kubectl-vma Plugin CI FAILED (run 23340137859, attempt 4).
+Story NOT marked complete. The next iteration should debug this failure.
+
+CI failure logs (last 100 lines):
+```
+Lint	Run linter	﻿2026-03-20T11:08:17.5704303Z ##[group]Run make lint
+Lint	Run linter	2026-03-20T11:08:17.5704585Z [36;1mmake lint[0m
+Lint	Run linter	2026-03-20T11:08:17.5754207Z shell: /usr/bin/bash -e {0}
+Lint	Run linter	2026-03-20T11:08:17.5754467Z ##[endgroup]
+Lint	Run linter	2026-03-20T11:08:17.6346723Z Downloading github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.8.0
+Lint	Run linter	2026-03-20T11:08:21.6061537Z Building custom golangci-lint with plugins...
+Lint	Run linter	2026-03-20T11:08:32.0887006Z "/home/runner/work/nutanix-vma/nutanix-vma/bin/golangci-lint" run
+Lint	Run linter	2026-03-20T11:09:16.1253224Z ##[error]internal/controller/migration_controller.go:120:13: SA1019: mgr.GetEventRecorderFor is deprecated: this uses the old events API and will be removed in a future release. Please use GetEventRecorder instead. (staticcheck)
+Lint	Run linter	2026-03-20T11:09:16.1261123Z 		Recorder: mgr.GetEventRecorderFor(
+Lint	Run linter	2026-03-20T11:09:16.1261446Z 		          ^
+Lint	Run linter	2026-03-20T11:09:16.1263149Z ##[error]test/integration/suite_test.go:143:13: SA1019: mgr.GetEventRecorderFor is deprecated: this uses the old events API and will be removed in a future release. Please use GetEventRecorder instead. (staticcheck)
+Lint	Run linter	2026-03-20T11:09:16.1264499Z 		Recorder: mgr.GetEventRecorderFor(
+Lint	Run linter	2026-03-20T11:09:16.1264799Z 		          ^
+Lint	Run linter	2026-03-20T11:09:16.1264974Z 2 issues:
+Lint	Run linter	2026-03-20T11:09:16.1265384Z * staticcheck: 2
+Lint	Run linter	2026-03-20T11:09:16.1868224Z make: *** [Makefile:99: lint] Error 1
+Lint	Run linter	2026-03-20T11:09:16.1877252Z ##[error]Process completed with exit code 2.
+```
