@@ -277,3 +277,35 @@ Iteration 3 [2026-03-20T05:45:08Z]: Nutanix API Client -- Snapshots & Images COM
 ### Issues: None
 ---
 Iteration 4 [2026-03-20T05:56:46Z]: Nutanix API Client -- Networking, Storage & Cluster Discovery COMPLETED. CI passed (run 23330980067). Attempt 1.
+
+---
+
+## US-008a: Mock Nutanix API Server -- Core
+
+### Status: Implemented, pending CI verification
+
+### What was done:
+- Created pkg/mock/store.go: thread-safe in-memory Store with sync.RWMutex, holds VMs, Subnets, StorageContainers, Clusters, Tasks, RecoveryPoints, Images; TaskState with poll-count lifecycle; atomic task counter for unique IDs
+- Created pkg/mock/helpers.go: shared JSON response utilities (writeJSON, writeError, parsePagination, paginatedResponse, singleResponse, taskRefBody)
+- Created pkg/mock/server.go: NewServer() with Option pattern, registerRoutes for all v4+v2 API paths, WithFixtures() loading 3 VMs (Linux/Windows+CDROM/GPU), 2 subnets, 1 storage container, 1 cluster
+- Created pkg/mock/handlers_vm.go: handleVMList (paginated), handleVMByID (routing to get/power-off/power-on/delete), power operations create async tasks and update state
+- Created pkg/mock/handlers_network.go: handleSubnetList (paginated v4 response)
+- Created pkg/mock/handlers_storage.go: handleStorageContainerList (v2 API response format with entities+metadata)
+- Created pkg/mock/handlers_task.go: handleTask with state transitions (QUEUED -> RUNNING -> SUCCEEDED after configurable polls)
+- Created pkg/mock/handlers_cluster.go: handleClusterList (paginated v4 response)
+- Created pkg/mock/server_test.go: 20 tests covering all endpoints -- VM list/get/power-off/power-on/delete/CDROM/GPU, subnet list, storage container list (with trailing slash), cluster list, task polling via HTTP, concurrent access, fixture loading, pagination, store unit tests
+
+### Verification:
+- `make build` passes
+- `make test` passes (89.1% coverage on pkg/mock)
+- `make lint` passes (0 issues)
+
+### Patterns discovered:
+- PollTask is on httpClient (unexported receiver), not on NutanixClient interface -- test task polling through operations that use it (PowerOff/PowerOn) rather than calling PollTask directly
+- golangci-lint modernize rule: use built-in min() instead of if-clamp pattern for pagination end bounds
+- golangci-lint lll: keep fixture struct literals under 120 chars by expanding nested struct fields to multi-line
+- goconst: test files accumulate string occurrences across tests -- extract repeated power state strings to test constants
+- httptest.Server + real NutanixClient is a powerful integration pattern: tests exercise actual HTTP serialization round-trip
+- Store.GetTask advances task lifecycle on each call -- the mock task transitions are driven by poll count, matching real Nutanix async task behavior
+
+### Issues: None
