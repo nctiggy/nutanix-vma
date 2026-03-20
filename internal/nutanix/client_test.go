@@ -123,7 +123,7 @@ func TestBasicAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
@@ -196,7 +196,7 @@ func TestRetry_On429(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
@@ -236,7 +236,7 @@ func TestRetry_On500(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if callCount.Load() != 2 {
 		t.Fatalf("expected 2 calls, got %d", callCount.Load())
@@ -368,14 +368,14 @@ func TestContentTypeHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET failed: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	// Test POST (should have Content-Type)
 	resp, err = hc.doRequest(context.Background(), "POST", server.URL+"/test", strings.NewReader(`{}`))
 	if err != nil {
 		t.Fatalf("POST failed: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }
 
 func TestStubMethods_ReturnNotImplemented(t *testing.T) {

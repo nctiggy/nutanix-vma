@@ -176,7 +176,7 @@ func (c *httpClient) doRequest(ctx context.Context, method, url string, body io.
 		}
 
 		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		apiErr := &NutanixAPIError{
 			StatusCode: resp.StatusCode,
@@ -202,7 +202,7 @@ func (c *httpClient) doJSON(ctx context.Context, method, url string, body io.Rea
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if dst != nil {
 		if err := json.NewDecoder(resp.Body).Decode(dst); err != nil {

@@ -30,15 +30,16 @@ const (
 	TaskStatusFailed    = "FAILED"
 	TaskStatusCancelled = "CANCELLED"
 
-	// Default polling interval and timeout for task polling.
-	defaultPollInterval = 2 * time.Second
-	defaultPollTimeout  = 30 * time.Minute
+	// DefaultPollInterval is the default polling interval for task polling.
+	DefaultPollInterval = 2 * time.Second
+	// DefaultPollTimeout is the default timeout for task polling.
+	DefaultPollTimeout = 30 * time.Minute
 )
 
-// pollTask polls a Nutanix async task until it reaches a terminal state.
+// PollTask polls a Nutanix async task until it reaches a terminal state.
 // Returns the completed task or an error if the task failed or timed out.
-func (c *httpClient) pollTask(ctx context.Context, taskUUID string) (*Task, error) {
-	return c.pollTaskWithOptions(ctx, taskUUID, defaultPollInterval, defaultPollTimeout)
+func (c *httpClient) PollTask(ctx context.Context, taskUUID string) (*Task, error) {
+	return c.pollTaskWithOptions(ctx, taskUUID, DefaultPollInterval, DefaultPollTimeout)
 }
 
 // pollTaskWithOptions polls a task with configurable interval and timeout.

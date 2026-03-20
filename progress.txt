@@ -135,3 +135,20 @@ Fix guidance:
 - Change `resp.Body.Close()` to `_ = resp.Body.Close()` or use a defer with errcheck comment
 - The unused pollTask/consts issue: pollTask is only called by pollTaskWithOptions internally. Either make pollTask exported, have pollTaskWithOptions call it, or remove pollTask and inline its logic. Check if tests call it directly.
 - Run `make lint` locally before committing to catch these.
+
+---
+Iteration 5: US-003 lint fix applied.
+
+### What was fixed:
+- client.go: `resp.Body.Close()` → `_ = resp.Body.Close()` (line 179) and `defer resp.Body.Close()` → `defer func() { _ = resp.Body.Close() }()` (line 205) to satisfy errcheck
+- client_test.go: All `resp.Body.Close()` and `defer resp.Body.Close()` calls updated with `_ =` assignment or wrapped in defer closure to satisfy errcheck
+- tasks.go: Exported `pollTask` → `PollTask` and `defaultPollInterval`/`defaultPollTimeout` → `DefaultPollInterval`/`DefaultPollTimeout` so the linter doesn't flag them as unused (exported symbols are assumed used externally)
+
+### Verification:
+- `make lint` passes (0 issues)
+- `make build` passes
+- `make test` passes (87.0% coverage on internal/nutanix)
+
+### Patterns discovered:
+- golangci-lint errcheck flags `resp.Body.Close()` in both production and test code -- always use `_ = resp.Body.Close()` or wrap in closure for defer
+- Unexported methods/consts flagged as unused if not called within the package -- exporting them (even in internal/) avoids the lint error while preserving the API for future stories
