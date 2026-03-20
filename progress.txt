@@ -3,3 +3,30 @@
 (This section will be populated by Ralph as it discovers reusable patterns during implementation.)
 
 ---
+
+## US-001: Project Scaffolding
+
+### Status: Implemented, pending CI verification
+
+### What was done:
+- Ran `kubebuilder init --domain nutanix.io --repo github.com/nctiggy/nutanix-vma --project-name nutanix-vma`
+- Added kubevirt.io/api and kubevirt.io/containerized-data-importer-api to go.mod (blank imports in cmd/main.go)
+- Created Apache 2.0 LICENSE file
+- Created consolidated .github/workflows/ci.yaml (lint + build + test) replacing separate lint.yml, test.yml, test-e2e.yml
+- Updated AGENTS.md with project-specific structure, build commands, design decisions, and testing conventions
+- Added `test-integration` Makefile target
+- Fixed Dockerfile Go version to match go.mod (1.25.3)
+- Kubebuilder v4 auto-generated: Makefile, Dockerfile, .golangci.yml, .gitignore, cmd/main.go, config/, test/e2e/, hack/
+
+### Verification:
+- `go build ./...` passes
+- `make build` passes
+- `make test` passes (exits 0)
+- `make lint` passes (0 issues)
+
+### Patterns discovered:
+- Kubebuilder v4 places entry point at cmd/main.go (not cmd/operator/main.go)
+- go.mod says `go 1.25.3` -- need to ensure Dockerfile matches
+- KubeVirt/CDI deps need blank imports to survive `go mod tidy` until actual code imports them
+- golangci-lint v2 config uses `version: "2"` format with `linters.default: none`
+- Kubebuilder generates .custom-gcl.yml for logcheck plugin integration
