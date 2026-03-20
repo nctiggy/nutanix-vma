@@ -377,39 +377,8 @@ func TestContentTypeHeader(t *testing.T) {
 	_ = resp.Body.Close()
 }
 
-func TestStubMethods_ReturnNotImplemented(t *testing.T) {
-	client, err := NewClient(ClientConfig{
-		Host:     "https://prism:9440",
-		Username: "admin",
-		Password: "pass",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	ctx := context.Background()
-
-	// VM methods are implemented in vm.go -- skip them here
-	// Snapshot/image/clone/delete methods are implemented in snapshot.go and image.go -- skip them here
-	// Network/storage/cluster methods are implemented in network.go, storage.go, cluster.go -- skip them here
-
-	_, err = client.DiscoverClusterForCBT(ctx, "uuid")
-	assertNotImplemented(t, err, "DiscoverClusterForCBT")
-
-	_, err = client.GetChangedRegions(ctx, "url", "jwt", "vm", "snap", "base", 0, 0, 0)
-	assertNotImplemented(t, err, "GetChangedRegions")
-}
-
-func assertNotImplemented(t *testing.T, err error, methodName string) {
-	t.Helper()
-	if err == nil {
-		t.Fatalf("%s: expected error, got nil", methodName)
-	}
-	expected := "not implemented: " + methodName
-	if err.Error() != expected {
-		t.Fatalf("%s: expected %q, got %q", methodName, expected, err.Error())
-	}
-}
+// All NutanixClient interface methods are now implemented.
+// Stub test removed: DiscoverClusterForCBT and GetChangedRegions are in cbt.go.
 
 func TestInsecureSkipVerify(t *testing.T) {
 	client, err := NewClient(ClientConfig{

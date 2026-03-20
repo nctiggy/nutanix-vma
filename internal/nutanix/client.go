@@ -25,6 +25,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -93,6 +94,10 @@ type httpClient struct {
 	username   string
 	password   string
 	maxRetries int
+
+	// CBT token cache for JWT refresh tracking.
+	cbtMu     sync.RWMutex
+	cbtTokens map[string]*cbtTokenEntry
 }
 
 // NewClient creates a new Nutanix API client.
@@ -234,14 +239,4 @@ func sleepWithContext(ctx context.Context, d time.Duration) {
 	case <-ctx.Done():
 	case <-timer.C:
 	}
-}
-
-// --- Stub implementations for methods to be implemented in later stories ---
-
-func (c *httpClient) DiscoverClusterForCBT(_ context.Context, _ string) (*CBTClusterInfo, error) {
-	return nil, errors.New("not implemented: DiscoverClusterForCBT")
-}
-
-func (c *httpClient) GetChangedRegions(_ context.Context, _ string, _ string, _ string, _ string, _ string, _ int64, _ int64, _ int64) (*ChangedRegions, error) {
-	return nil, errors.New("not implemented: GetChangedRegions")
 }
