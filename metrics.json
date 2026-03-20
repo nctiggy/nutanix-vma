@@ -4,11 +4,11 @@
   "totalDurationSeconds": 1825,
   "totalDurationHuman": "30m 25s",
   "maxIterations": 30,
-  "totalIterations": 8,
-  "storiesCompleted": 8,
+  "totalIterations": 9,
+  "storiesCompleted": 9,
   "storiesRemaining": 20,
-  "totalCIRuns": 8,
-  "ciPasses": 8,
+  "totalCIRuns": 9,
+  "ciPasses": 9,
   "ciFails": 0,
   "ciSkipped": 0,
   "noCommitIterations": 0,
@@ -108,6 +108,18 @@
       "endTime": "2026-03-20T06:07:48Z",
       "durationSeconds": 658,
       "durationHuman": "10m 58s",
+      "attemptNumber": 1
+    },
+    {
+      "iteration": 6,
+      "storyId": "US-008a",
+      "storyTitle": "Mock Nutanix API Server -- Core",
+      "result": "ci_pass",
+      "ciRunId": "23331562616",
+      "startTime": "2026-03-20T06:07:51Z",
+      "endTime": "2026-03-20T06:22:01Z",
+      "durationSeconds": 850,
+      "durationHuman": "14m 10s",
       "attemptNumber": 1
     }
   ]

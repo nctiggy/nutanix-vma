@@ -381,3 +381,5 @@ Iteration 6 [2026-03-20T06:22:01Z]: Mock Nutanix API Server -- Core COMPLETED. C
 - preallocate slices with make([]T, 0, len) to satisfy prealloc linter
 
 ### Issues: None
+---
+Iteration 7 [2026-03-20T06:38:06Z]: Mock Nutanix API Server -- Snapshots, Images, CBT COMPLETED. CI passed (run 23331942762). Attempt 1.
