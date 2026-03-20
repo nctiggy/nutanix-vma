@@ -4,11 +4,11 @@
   "totalDurationSeconds": 1825,
   "totalDurationHuman": "30m 25s",
   "maxIterations": 30,
-  "totalIterations": 3,
-  "storiesCompleted": 3,
+  "totalIterations": 4,
+  "storiesCompleted": 4,
   "storiesRemaining": 20,
-  "totalCIRuns": 3,
-  "ciPasses": 3,
+  "totalCIRuns": 4,
+  "ciPasses": 4,
   "ciFails": 0,
   "ciSkipped": 0,
   "noCommitIterations": 0,
@@ -48,6 +48,18 @@
       "endTime": "2026-03-20T04:56:41Z",
       "durationSeconds": 353,
       "durationHuman": "5m 53s",
+      "attemptNumber": 1
+    },
+    {
+      "iteration": 1,
+      "storyId": "US-003",
+      "storyTitle": "Nutanix API Client -- Core + Auth",
+      "result": "ci_pass",
+      "ciRunId": "23330271648",
+      "startTime": "2026-03-20T05:15:46Z",
+      "endTime": "2026-03-20T05:25:05Z",
+      "durationSeconds": 559,
+      "durationHuman": "9m 19s",
       "attemptNumber": 1
     }
   ]

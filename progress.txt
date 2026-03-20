@@ -179,3 +179,38 @@ Iteration 5: US-003 lint fix applied.
 - golangci-lint unparam checks if function params always receive same value -- pass real bodies to avoid
 ---
 Iteration 1 [2026-03-20T05:25:05Z]: Nutanix API Client -- Core + Auth COMPLETED. CI passed (run 23330271648). Attempt 1.
+
+---
+
+## US-005: Nutanix API Client -- Snapshots & Images
+
+### Status: Implemented, pending CI verification
+
+### What was done:
+- Created internal/nutanix/snapshot.go: CreateRecoveryPoint (POST -> task -> poll -> extract UUID from entities), GetRecoveryPoint, DeleteRecoveryPoint (DELETE -> task -> poll)
+- Created internal/nutanix/image.go: CreateImageFromDisk (POST -> task -> poll -> extract UUID), GetImage, DownloadImage (streams via io.Copy -- no in-memory buffering), DeleteImage (DELETE -> task -> poll)
+- Implemented CloneVMFromRecoveryPoint fallback path (POST $actions/vm-recovery -> task -> extract cloned VM UUID)
+- Implemented DeleteVM (DELETE -> task -> poll) for clone cleanup
+- Removed 9 stub methods from client.go (snapshot, image, clone, deleteVM)
+- Updated client_test.go stub test to skip implemented methods
+- Created snapshot_test.go: create success, fallback entity, no entities error, task failure, get success, get not found, delete success, delete task failure
+- Created image_test.go: create success, task failure, no entities, get success, get not found, download 4KB, download 1MB streaming, download server error, delete success, delete task failure, clone success, clone task failure, clone no entities, deleteVM success, deleteVM task failure, full fallback path integration test (clone -> image -> delete)
+- Fixed goconst lint warnings across ALL test files by using http.Method* constants and shared test constants (testTaskFailID, testVMUUID)
+
+### Verification:
+- `make lint` passes (0 issues)
+- `make build` passes
+- `make test` passes (84.6% coverage on internal/nutanix)
+
+### Patterns discovered:
+- Task entity extraction: search for known rel strings first, fall back to first entity, error if empty
+- Recovery point API: POST /api/dataprotection/v4.0/config/recovery-points
+- Image API: POST /api/vmm/v4.0/images, GET .../images/{uuid}/file for download
+- Clone from RP: POST /api/dataprotection/v4.0/config/recovery-points/{uuid}/$actions/vm-recovery
+- DownloadImage uses doRequest (not doJSON) to get raw response body for io.Copy streaming
+- goconst linter counts occurrences across all files in a package -- adding new test files can push previously-ok strings over the threshold
+- Tagged switch (staticcheck QF1002): use `switch v := expr; v { case 1: ... }` not `switch { case v == 1: ... }`
+
+### Issues: None
+---
+Iteration 2 [2026-03-20T05:36:01Z]: Nutanix API Client -- VM Operations COMPLETED. CI passed (run 23330526435). Attempt 1.

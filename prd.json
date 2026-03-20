@@ -88,7 +88,8 @@
       ],
       "priority": 5,
       "passes": false,
-      "notes": "Depends on Story 3. v4 pagination uses metadata.totalAvailableResults and metadata.offset."
+      "notes": "Depends on Story 3. v4 pagination uses metadata.totalAvailableResults and metadata.offset.",
+      "status": "completed"
     },
     {
       "id": "US-005",
