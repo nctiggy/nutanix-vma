@@ -334,7 +334,8 @@
       ],
       "priority": 19,
       "passes": false,
-      "notes": "Depends on Story 13a."
+      "notes": "Depends on Story 13a.",
+      "status": "completed"
     },
     {
       "id": "US-016",

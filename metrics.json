@@ -4,11 +4,11 @@
   "totalDurationSeconds": 1825,
   "totalDurationHuman": "30m 25s",
   "maxIterations": 30,
-  "totalIterations": 17,
-  "storiesCompleted": 17,
+  "totalIterations": 18,
+  "storiesCompleted": 18,
   "storiesRemaining": 20,
-  "totalCIRuns": 17,
-  "ciPasses": 17,
+  "totalCIRuns": 18,
+  "ciPasses": 18,
   "ciFails": 0,
   "ciSkipped": 0,
   "noCommitIterations": 0,
@@ -216,6 +216,18 @@
       "endTime": "2026-03-20T08:58:13Z",
       "durationSeconds": 1578,
       "durationHuman": "26m 18s",
+      "attemptNumber": 1
+    },
+    {
+      "iteration": 15,
+      "storyId": "US-014",
+      "storyTitle": "Migration Controller -- Warm Migration (Experimental)",
+      "result": "ci_pass",
+      "ciRunId": "23336813172",
+      "startTime": "2026-03-20T08:58:16Z",
+      "endTime": "2026-03-20T09:30:35Z",
+      "durationSeconds": 1939,
+      "durationHuman": "32m 19s",
       "attemptNumber": 1
     }
   ]
