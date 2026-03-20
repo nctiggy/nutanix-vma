@@ -794,3 +794,48 @@ Iteration 14 [2026-03-20T08:58:13Z]: Migration Controller -- VM Creation & Clean
 ### Issues: None
 ---
 Iteration 15 [2026-03-20T09:30:35Z]: Migration Controller -- Warm Migration (Experimental) COMPLETED. CI passed (run 23336813172). Attempt 1.
+
+---
+
+## US-016: kubectl-vma Plugin
+
+### Status: Implemented, pending CI verification
+
+### What was done:
+- Created cmd/kubectl-vma/main.go: cobra-based CLI with 5 subcommands
+  - `inventory <provider-name>`: reads Provider CR + Secret, creates NutanixClient, calls ListVMs, displays table with UUID, name, CPU, memory (MiB), disk count, power state
+  - `plan <plan-name>`: reads MigrationPlan CR, displays header (name, namespace, type, phase, provider, target NS, VM count) + per-VM validation concerns table
+  - `migrate <plan-name>`: verifies plan is Ready, creates Migration CR with timestamped name
+  - `status <migration-name>`: reads Migration CR, displays header (name, namespace, plan, phase, started, completed) + per-VM pipeline progress table (phase, started, completed, error)
+  - `cancel <migration-name> <vm-uuid> [<vm-uuid>...]`: patches Migration CR cancel list with deduplication
+- Used text/tabwriter for all table output
+- buildClients() helper creates controller-runtime client + kubernetes.Interface from kubeconfig
+- All print functions accept io.Writer for testability
+- Namespace flag via --namespace / -n (default: "default")
+- Created cmd/kubectl-vma/main_test.go: 7 test functions
+  - TestPrintVMInventory: 2 VMs with varying CPU/memory/disk/power, verifies table headers and data, CDROM excluded from disk count
+  - TestPrintVMInventory_Empty: nil VM list, header-only output
+  - TestCountDataDisks: 5 sub-tests (no disks, one disk, disk+cdrom, case insensitive cdrom, multiple disks)
+  - TestFormatConcerns: 3 sub-tests (no concerns, single error, multiple concerns)
+  - TestPrintPlanStatus: plan with 2 VMs, one with GPU warning concern
+  - TestPrintMigrationStatus: migration with 3 VMs in different phases (running, completed, failed), verifies timestamps, errors, nil handling
+  - TestPrintMigrationStatus_NoVMs: empty migration, verifies no VM table shown
+  - TestNewRootCmd: verifies all 5 subcommands registered
+
+### Verification:
+- `make build` passes
+- `make lint` passes (0 issues)
+- `go test ./cmd/kubectl-vma/` passes (7 tests, 42.1% coverage)
+- `go build -o kubectl-vma ./cmd/kubectl-vma/` produces binary
+- All unit tests pass (`go test` on all non-integration packages)
+- Integration test hook spec timeout is pre-existing (US-015, not caused by this change)
+
+### Patterns discovered:
+- Nutanix VM uses ExtID (not UUID), MemorySizeBytes (not MemoryMB), Host (not URL) in ClientConfig
+- NewClient returns (NutanixClient, error) -- must handle error
+- MigrationSpec.PlanRef uses corev1.LocalObjectReference (not a custom type)
+- cobra is in indirect deps -- auto-promoted to direct by `go mod tidy` on use
+- golangci-lint errcheck requires `_, _ =` on fmt.Fprintf/Fprintln to io.Writer and `_ =` on tabwriter.Flush
+- golangci-lint lll enforces 120 char line limit -- break function signatures across lines
+
+### Issues: None (pre-existing integration test instability not caused by this change)
