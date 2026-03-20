@@ -89,3 +89,49 @@ Iteration 2 [2026-03-20T04:50:45Z]: CRD Types -- Provider, NetworkMap, StorageMa
 ### Issues: None
 ---
 Iteration 3 [2026-03-20T04:56:41Z]: CRD Types -- MigrationPlan, Migration, Hook COMPLETED. CI passed (run 23329657040). Attempt 1.
+
+---
+
+## US-003: Nutanix API Client -- Core + Auth
+
+### Status: Implemented, pending CI verification
+
+### What was done:
+- Created internal/nutanix/types.go with forward-declared types: VM, Disk, DiskAddress, DiskBackingInfo, NIC, BootConfig, GPU, Reference, IPAddress, Subnet, StorageContainer, RecoveryPoint, Image, Task, TaskError, TaskEntity, Cluster, ClusterNetwork, CBTClusterInfo, ChangedRegions, ChangedRegion, PowerState, ListResponse, ListMetadata, SingleResponse
+- Created internal/nutanix/client.go with NutanixClient interface (all 20 methods), ClientConfig, NewClient(), httpClient with doRequest/doJSON helpers, retry with exponential backoff on 429/5xx, NutanixAPIError type, all unimplemented methods returning clear not-implemented errors
+- Created internal/nutanix/auth.go (Basic Auth via SetBasicAuth, buildTransport with InsecureSkipVerify and custom CA cert)
+- Created internal/nutanix/tasks.go (pollTask/pollTaskWithOptions for GET /api/prism/v4.0/config/tasks/{uuid}, QUEUED->RUNNING->SUCCEEDED/FAILED/CANCELLED)
+- Created internal/nutanix/client_test.go (validation, auth, retry 429/500/exhaustion/no-retry-on-4xx, doJSON, headers, stub methods, timeouts, backoff)
+- Created internal/nutanix/tasks_test.go (task polling: success, failure, cancellation, timeout, context cancelled, entities affected, failed-no-error-message)
+
+### Verification:
+- `make build` passes
+- `make test` passes (86.9% coverage on internal/nutanix)
+
+### Patterns discovered:
+- `go fmt` auto-aligns struct fields in types.go -- let the formatter do its job
+- httptest.NewServer provides plain HTTP so no TLS config needed in tests
+- sync/atomic.Int32 is cleaner than atomic.AddInt32 for test call counters
+- Exponential backoff uses math.Pow(2, attempt) * 1s base
+- sleepWithContext uses timer+select for cancellation-aware delays
+
+### Issues: None
+---
+Iteration 4 [2026-03-20T05:03:54Z]: US-003 CI FAILED (run 23329810330, attempt 1).
+Story NOT marked complete. The next iteration should debug this failure.
+
+CI failure logs (lint errors):
+```
+internal/nutanix/client.go:179:18: Error return value of `resp.Body.Close` is not checked (errcheck)
+internal/nutanix/client.go:205:23: Error return value of `resp.Body.Close` is not checked (errcheck)
+internal/nutanix/client_test.go:126:23: Error return value of `resp.Body.Close` is not checked (errcheck)
+internal/nutanix/tasks.go:34:2: const defaultPollInterval is unused (unused)
+internal/nutanix/tasks.go:35:2: const defaultPollTimeout is unused (unused)
+internal/nutanix/tasks.go:40:22: func (*httpClient).pollTask is unused (unused)
+6 issues: errcheck: 3, unused: 3
+```
+
+Fix guidance:
+- Change `resp.Body.Close()` to `_ = resp.Body.Close()` or use a defer with errcheck comment
+- The unused pollTask/consts issue: pollTask is only called by pollTaskWithOptions internally. Either make pollTask exported, have pollTaskWithOptions call it, or remove pollTask and inline its logic. Check if tests call it directly.
+- Run `make lint` locally before committing to catch these.
