@@ -1,11 +1,38 @@
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  labels:
-    app.kubernetes.io/name: nutanix-vma
-    app.kubernetes.io/managed-by: kustomize
   name: manager-role
 rules:
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["get", "list", "watch"]
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - vma.nutanix.io
+  resources:
+  - nutanixproviders
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - vma.nutanix.io
+  resources:
+  - nutanixproviders/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - vma.nutanix.io
+  resources:
+  - nutanixproviders/status
+  verbs:
+  - get
+  - patch
+  - update

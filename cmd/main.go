@@ -30,6 +30,7 @@ import (
 	_ "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 
 	vmav1alpha1 "github.com/nctiggy/nutanix-vma/api/v1alpha1"
+	"github.com/nctiggy/nutanix-vma/internal/controller"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -176,6 +177,11 @@ func main() {
 	})
 	if err != nil {
 		setupLog.Error(err, "Failed to start manager")
+		os.Exit(1)
+	}
+
+	if err := controller.SetupProviderController(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "Provider")
 		os.Exit(1)
 	}
 

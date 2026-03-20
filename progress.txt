@@ -429,3 +429,51 @@ Iteration 7 [2026-03-20T06:38:06Z]: Mock Nutanix API Server -- Snapshots, Images
 ### Issues: None
 ---
 Iteration 8 [2026-03-20T06:55:51Z]: VM Builder -- Metadata Translation COMPLETED. CI passed (run 23332359865). Attempt 1.
+
+---
+
+## US-011: Integration Test Harness + Provider Controller
+
+### Status: Implemented, pending CI verification
+
+### What was done:
+- Created test/fixtures/crds/kubevirt.yaml: Minimal VirtualMachine + VirtualMachineInstance CRD stubs with x-kubernetes-preserve-unknown-fields:true for envtest
+- Created test/fixtures/crds/cdi.yaml: Minimal DataVolume CRD stub with x-kubernetes-preserve-unknown-fields:true for envtest
+- Created test/integration/suite_test.go: envtest harness setup
+  - Registers VMA CRDs from config/crd/bases/ + KubeVirt/CDI stubs from test/fixtures/crds/
+  - Starts mock Nutanix server in-process with fixtures (clusters have nil Network to avoid unreachable PE URLs)
+  - Starts controller manager with custom NutanixClientFactory (2s timeout, 0 retries for fast test execution)
+  - Proper teardown: cancel context for manager, close mock server, stop envtest (non-fatal on timeout)
+- Created internal/controller/provider_controller.go: ProviderReconciler with NutanixClientFactory injection
+  - Reconciles NutanixProvider CRs: reads Secret credentials, creates Nutanix client, fetches inventory
+  - Inventory: ListVMs (blocking), ListSubnets (best-effort), ListClusters (best-effort), ListStorageContainers per PE (best-effort)
+  - Status: Phase (Pending→Connecting→Connected/Error), VMCount, Conditions (Connected, InventoryReady)
+  - Finalizer (vma.nutanix.io/provider-protection): prevents deletion while MigrationPlans reference the provider
+  - Requeues after configurable RefreshInterval (default 5m)
+  - Error handling: sets Error phase + Connected=False condition for missing secrets, bad credentials, connection failures
+  - RBAC markers for secrets read, provider CRUD + status + finalizers
+- Created internal/controller/provider_controller_test.go: 9 unit tests using fake client
+  - Successful inventory (3 VMs, 1 cluster with PE), secret not found, invalid credentials (empty password), ListVMs failure, client factory failure, not found (no-op), finalizer addition, deletion with plan reference (requeue), partial inventory failure (subnet/cluster errors), custom refresh interval (10m)
+- Registered Provider controller in cmd/main.go via controller.SetupProviderController(mgr)
+- Created test/integration/provider_test.go: 3 Ginkgo integration tests with envtest + mock server
+  - Valid credentials: provider reaches Connected phase, VMCount=3 (from fixtures), Connected=True + InventoryReady=True conditions, finalizer added
+  - Bad credentials (empty password): provider reaches Error phase, Connected=False condition
+  - Missing secret: provider reaches Error phase
+
+### Verification:
+- `make build` passes
+- `make test` passes (78.3% coverage on internal/controller)
+- `make test-integration` passes (3 of 3 specs)
+- `make lint` passes (0 issues)
+
+### Patterns discovered:
+- NutanixClientFactory injection pattern: allows tests to override client creation without modifying production code
+- envtest + httptest mock server: controller manager creates real Nutanix HTTP clients against in-process mock server
+- Mock cluster ExternalAddress must be nil/empty in integration tests -- controller constructs https://ADDR:9440 PE URLs that are unreachable from test host
+- Fast-failing client factory (2s timeout, 0 retries) prevents integration tests from blocking on unreachable PE URLs
+- envtest Stop() can timeout waiting for kube-apiserver process -- log but don't fail the suite on teardown
+- golangci-lint goconst counts string occurrences across test files -- extract repeated namespace strings to constants
+- golangci-lint unparam flags test helpers that always receive the same value -- use no-arg function with internal default
+- controller-runtime fake client requires WithStatusSubresource() for status updates to work
+
+### Issues: None
