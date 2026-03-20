@@ -1,0 +1,383 @@
+{
+  "project": "nutanix-vma",
+  "branchName": "ralph/nutanix-vma",
+  "description": "Nutanix VMA -- Kubernetes operator to migrate Nutanix AHV VMs to KubeVirt. Cold migration (power off, snapshot, export, CDI import, create VM) and experimental warm migration (CBT-based incremental sync). Custom Prism API client, mock Nutanix server for testing, pre-flight validation, hooks, kubectl plugin, observability.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Project Scaffolding",
+      "description": "As a developer, I need the Go module, kubebuilder project, Makefile, Dockerfile, GitHub Actions CI, LICENSE (Apache 2.0), README, and AGENTS.md initialized so that subsequent stories have a buildable project foundation. Install kubebuilder if not present. Run: kubebuilder init --domain nutanix.io --repo github.com/nctiggy/nutanix-vma --project-name nutanix-vma. Entry point is cmd/main.go (kubebuilder v4 default). Add kubevirt.io/api and kubevirt.io/containerized-data-importer-api to go.mod. Extend kubebuilder Makefile with test-integration, test-e2e, docker-push targets. Dockerfile: multi-stage, gcr.io/distroless/static:nonroot base. AGENTS.md: include build commands, project structure, testing conventions, key design decisions (see PRD Section 6). CI workflow: .github/workflows/ci.yaml on push/PR runs make lint, make build, make test. Go 1.22+. golangci-lint config.",
+      "acceptanceCriteria": [
+        "go build ./... succeeds",
+        "make lint passes",
+        "make test runs (exits 0)",
+        "GitHub Actions CI workflow triggers on push",
+        "Apache 2.0 LICENSE file present",
+        "README.md with project description and build instructions",
+        "AGENTS.md with Ralph instructions (build commands, project structure, conventions)",
+        "Dockerfile builds successfully"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": "kubebuilder generates ~20 scaffolding files automatically. The 5-8 file limit applies to hand-written files only. kubebuilder v4 places entry point at cmd/main.go, NOT cmd/operator/main.go."
+    },
+    {
+      "id": "US-002a",
+      "title": "CRD Types -- Provider, NetworkMap, StorageMap",
+      "description": "As a developer, I need the core CRD types defined so that the operator has a declarative API. Define in api/v1alpha1/: NutanixProvider (spec: URL, SecretRef, RefreshInterval, InsecureSkipVerify; status: Phase, VMCount, Conditions), NetworkMap (spec: ProviderRef, Map []NetworkPair with Source ID/Name and Destination Type pod/multus, Name, Namespace), StorageMap (spec: ProviderRef, Map []StoragePair with Source ID/Name and Destination StorageClass, VolumeMode, AccessMode). Create groupversion_info.go for vma.nutanix.io/v1alpha1. Create sample CRs in config/samples/.",
+      "acceptanceCriteria": [
+        "3 CRD types defined with kubebuilder markers",
+        "make generate && make manifests succeeds",
+        "CRD YAML generated in config/crd/bases/",
+        "Sample CRs in config/samples/",
+        "make build && make test passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": "Depends on Story 1. Do NOT use kubebuilder create api (it generates controller stubs we don't want yet). Hand-write the type files."
+    },
+    {
+      "id": "US-002b",
+      "title": "CRD Types -- MigrationPlan, Migration, Hook",
+      "description": "As a developer, I need the migration CRD types defined. MigrationPlan (spec: ProviderRef, TargetNamespace, Type cold/warm, NetworkMapRef, StorageMapRef, VMs []PlanVM, MaxInFlight, TargetPowerState, WarmConfig; status: Phase, VMs []VMValidationStatus with Concerns). Migration (spec: PlanRef, Cutover timestamp, Cancel []string; status: Phase, Started, Completed, VMs []VMMigrationStatus). VMMigrationStatus MUST include resource tracking fields for idempotency: SnapshotUUID, ImageUUIDs []string, TaskUUID, DataVolumeNames []string, OriginalPowerState. Hook (spec: Image, Playbook base64, Deadline, ServiceAccount; status: Conditions). Add sample CRs.",
+      "acceptanceCriteria": [
+        "3 CRD types defined with kubebuilder markers",
+        "VMMigrationStatus includes resource tracking fields (SnapshotUUID, ImageUUIDs, TaskUUID, DataVolumeNames, OriginalPowerState)",
+        "make generate && make manifests succeeds, adding to existing CRD output",
+        "Sample CRs for Plan, Migration, Hook in config/samples/",
+        "make build && make test passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": "Depends on Story 2a. Resource tracking fields are critical for idempotency in Story 13a -- do not omit them."
+    },
+    {
+      "id": "US-003",
+      "title": "Nutanix API Client -- Core + Auth",
+      "description": "As a developer, I need the NutanixClient interface and HTTP client foundation. Create internal/nutanix/types.go with forward-declared minimal structs (VM, Disk, NIC, BootConfig, GPU, Reference, IPAddress, Subnet, StorageContainer, RecoveryPoint, Image, Task, CBTClusterInfo, ChangedRegions, ChangedRegion, PowerState). Create client.go with NutanixClient interface (all 20 methods: ListVMs, GetVM, PowerOffVM, PowerOnVM, GetVMPowerState, CreateRecoveryPoint, GetRecoveryPoint, DeleteRecoveryPoint, CreateImageFromDisk, GetImage, DownloadImage, DeleteImage, CloneVMFromRecoveryPoint, DeleteVM, DiscoverClusterForCBT, GetChangedRegions, ListSubnets, ListStorageContainers, ListClusters), ClientConfig, NewClient(), httpClient with stubs returning errors.New('not implemented: MethodName'). Create auth.go (Basic Auth, custom TLS, InsecureSkipVerify). Create tasks.go (pollTask helper for GET /api/prism/v4.0/config/tasks/{uuid}). Implement retry with exponential backoff on 429/5xx. Define NutanixAPIError type.",
+      "acceptanceCriteria": [
+        "NutanixClient interface fully defined with all 20 methods",
+        "Forward-declared types allow interface to compile",
+        "NewClient(config) returns working client",
+        "Basic Auth header set on all requests",
+        "Custom CA and InsecureSkipVerify work",
+        "Task polling helper polls until SUCCEEDED/FAILED",
+        "Retry logic with exponential backoff on 429/5xx",
+        "All unimplemented methods return clear not-implemented errors",
+        "Unit tests with httptest for auth, retry, task polling",
+        "make build passes with no compilation errors"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": "Depends on Story 1. Does NOT depend on CRD stories. Forward-declared types are minimal -- full struct fields added in Story 4."
+    },
+    {
+      "id": "US-004",
+      "title": "Nutanix API Client -- VM Operations",
+      "description": "As a developer, I need VM CRUD and power operations. Populate full struct fields in internal/nutanix/types.go from PRD Section 6 'Nutanix API Response Types' (VM, Disk, NIC, BootConfig, GPU, Reference, IPAddress, Subnet, StorageContainer, RecoveryPoint, Image, Task, CBTClusterInfo, ChangedRegions, ChangedRegion). Create vm.go: ListVMs (paginated via $top/$skip, v4 API), GetVM, PowerOffVM (async task -> poll), PowerOnVM (async task -> poll), GetVMPowerState. Replace stubs in client.go.",
+      "acceptanceCriteria": [
+        "VM list with pagination support (handles >500 VMs)",
+        "VM get returns full spec (disks, NICs, boot config, cluster reference)",
+        "Power on/off uses async task polling until complete",
+        "Go structs match Nutanix v4 API schema from PRD Section 6",
+        "Unit tests for each method with httptest mock endpoints"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": "Depends on Story 3. v4 pagination uses metadata.totalAvailableResults and metadata.offset."
+    },
+    {
+      "id": "US-005",
+      "title": "Nutanix API Client -- Snapshots & Images",
+      "description": "As a developer, I need snapshot and image operations. Create snapshot.go: CreateRecoveryPoint (POST -> task -> poll), GetRecoveryPoint, DeleteRecoveryPoint. Create image.go: CreateImageFromDisk (POST with data_source_reference -> task -> poll), GetImage, DownloadImage (stream to io.Writer, NOT buffer in memory), DeleteImage. Also implement CloneVMFromRecoveryPoint fallback path. Replace stubs in client.go.",
+      "acceptanceCriteria": [
+        "Recovery point create/get/delete with async task polling",
+        "Image creation from vDisk reference (primary path)",
+        "CloneVMFromRecoveryPoint + image from clone + cleanup (fallback path)",
+        "Image download streams to io.Writer without buffering full image",
+        "Unit tests for each method including fallback path"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": "Depends on Story 4."
+    },
+    {
+      "id": "US-006",
+      "title": "Nutanix API Client -- Networking, Storage & Cluster Discovery",
+      "description": "As a developer, I need networking, storage, and cluster discovery operations. Create network.go: ListSubnets (v4 networking API on PC). Create storage.go: ListStorageContainers (v2 API, takes PE URL as param). Create cluster.go: ListClusters (v4 clustermgmt API, returns cluster IPs for PE auto-discovery). Replace stubs in client.go.",
+      "acceptanceCriteria": [
+        "Subnet list returns UUID, name, VLAN ID",
+        "Storage container list works via Prism Element URL",
+        "Cluster list returns PE IPs for auto-discovery",
+        "Unit tests for each method with httptest"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": "Depends on Story 4."
+    },
+    {
+      "id": "US-007",
+      "title": "Nutanix API Client -- CBT/CRT",
+      "description": "As a developer, I need Changed Block Tracking operations for warm migration. Create cbt.go: DiscoverClusterForCBT (POST to PC, returns CBTClusterInfo with PE URL + JWT token), GetChangedRegions (GET to PE with JWT in cookie NTNX_IGW_SESSION, paginated with nextOffset, up to 10000 regions per page). JWT refresh: if token age > 12 minutes, re-discover to get new token. Replace stubs in client.go.",
+      "acceptanceCriteria": [
+        "Two-step flow: PC discovery returns PE URL + JWT token",
+        "Changed regions query with offset/length/block_size params",
+        "JWT token passed in cookie header (NTNX_IGW_SESSION)",
+        "Pagination via nextOffset until nil",
+        "Token refresh when nearing 15-min expiry",
+        "Zero-region identification in response",
+        "Unit tests: single page, multi-page, token refresh, zero regions"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": "Depends on Story 5 and Story 6. This is for warm migration (experimental) but the client code is needed by the mock server."
+    },
+    {
+      "id": "US-008a",
+      "title": "Mock Nutanix API Server -- Core",
+      "description": "As a developer, I need a mock Nutanix API server for testing. Create pkg/mock/store.go (in-memory state: VMs, subnets, containers, clusters, tasks -- thread-safe with sync.RWMutex). Create pkg/mock/server.go (NewServer() returns *httptest.Server, WithFixtures() loads default data: 3 VMs, 2 subnets, 1 container, 1 cluster). Create handler files: handlers_vm.go (list paginated, get, power-off -> task), handlers_network.go (list subnets), handlers_storage.go (list containers), handlers_task.go (QUEUED->RUNNING->SUCCEEDED after 2 polls), handlers_cluster.go (list clusters).",
+      "acceptanceCriteria": [
+        "In-process test helper with mock.NewServer()",
+        "VM list/get/power-off endpoints return correct data",
+        "Subnet and storage container list endpoints work",
+        "Task polling simulation (state transitions after polls)",
+        "Default fixture data loads with WithFixtures()",
+        "Tests verify all endpoints return expected responses"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": "Depends on Story 4 and Story 6 (needs nutanix types for response structures). At the 8-file limit -- keep handlers_network and handlers_storage small."
+    },
+    {
+      "id": "US-008b",
+      "title": "Mock Nutanix API Server -- Snapshots, Images, CBT",
+      "description": "As a developer, I need the mock server to support snapshot, image, and CBT operations. Add handlers_snapshot.go (create -> task, get, delete -> task), handlers_image.go (create -> task, get, download with synthetic data + Range header support, delete), handlers_cbt.go (cluster discovery returning PE URL + JWT, changed regions with pagination). Create cmd/mock-nutanix/main.go as standalone binary with --port flag. Update server.go to register new routes and store.go for new state.",
+      "acceptanceCriteria": [
+        "Snapshot CRUD via mock with async tasks",
+        "Image create/download with configurable size and HTTP Range header support",
+        "CBT two-step flow with JWT token validation",
+        "CBT pagination with configurable changed regions",
+        "Standalone binary: go run cmd/mock-nutanix/main.go --port 9440",
+        "Tests verify snapshot/image/CBT flows"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": "Depends on Story 8a and Story 7."
+    },
+    {
+      "id": "US-009",
+      "title": "VM Builder -- Metadata Translation",
+      "description": "As a developer, I need to translate Nutanix VM metadata to KubeVirt VirtualMachine specs. Create internal/builder/vm.go: Build(vm, networkMap, storageMap, opts) returns *kubevirtv1.VirtualMachine. Create internal/builder/sanitize.go: SanitizeName() (lowercase, replace spaces/underscores/parens with hyphens, collapse, trim, truncate 63 chars, append -N on collision). CPU: preserve topology (sockets->sockets, cores->cores, threads->threads default 1). Memory: bytes->MiB. Firmware: LEGACY->bios, UEFI->efi, SECURE_BOOT->efi+secureBoot. Disks: DISK only (skip CDROM without error), SCSI/PCI->bus:scsi, IDE/SATA->bus:sata, bootOrder:1 on boot disk. NICs: pod->masquerade, multus->bridge+MAC preserved. Machine: Q35->q35, PC->pc. Labels on metadata AND template.metadata.",
+      "acceptanceCriteria": [
+        "CPU topology preserved (sockets/cores/threads, NOT flattened)",
+        "All firmware types mapped correctly (LEGACY/UEFI/SECURE_BOOT)",
+        "CDROM entries skipped without error",
+        "IDE disks mapped to sata bus",
+        "MAC address preserved on bridge interfaces, not on masquerade",
+        "Machine type uses KubeVirt aliases (q35, pc)",
+        "Name sanitization handles spaces, unicode, >63 chars, collisions",
+        "Labels set on both metadata and spec.template.metadata",
+        "Test fixtures: single-disk Linux, multi-disk Windows+CDROM, UEFI, multi-NIC, IDE disk"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": "Depends on Story 2b and Story 4."
+    },
+    {
+      "id": "US-010",
+      "title": "Validation Engine",
+      "description": "As a developer, I need pre-flight validation for migration plans. Create internal/validation/validator.go: Validate(ctx, vm, ValidationOptions) returns []Concern. ValidationOptions: NetworkMap, StorageMap, ExistingVMs, TargetNamespace, optional client.Client (nil = skip target-side checks). Concern: Category (Error/Warning/Info), Message. Rules: unmapped storage container (Error), unmapped subnet (Error), GPU present (Warning), Volume Group (Error), NETWORK_FUNCTION_NIC (Error), DIRECT_NIC (Warning: requires SR-IOV), MAC conflict (Warning), namespace missing (Error), IDE disk (Info), StorageClass not found (Error), Multus NAD not found (Error), CDI not installed (Error), KubeVirt not installed (Error).",
+      "acceptanceCriteria": [
+        "Each validation rule implemented and unit tested",
+        "Concerns have clear human-readable messages",
+        "Error-level concerns block migration, Warning/Info do not",
+        "Target-side checks skip gracefully when K8s client is nil",
+        "Unit tests for every rule plus combination scenarios"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": "Depends on Story 2b and Story 4."
+    },
+    {
+      "id": "US-011",
+      "title": "Integration Test Harness + Provider Controller",
+      "description": "As a developer, I need the integration test harness and the Provider controller. Create test/integration/suite_test.go: envtest setup, register VMA CRD schemes, start mock Nutanix server, install VMA CRDs from config/crd/bases/. For KubeVirt/CDI CRDs: register types from Go API packages and create minimal CRD stubs in test/fixtures/crds/ with x-kubernetes-preserve-unknown-fields:true. Add Makefile target test-fixtures. Create internal/controller/provider_controller.go: reconcile NutanixProvider CRs, create Nutanix client from Secret, fetch inventory (ListVMs, ListSubnets, ListClusters, ListStorageContainers per PE), update status, set Connected/InventoryReady conditions, requeue after RefreshInterval, add finalizer. Register controller in cmd/main.go.",
+      "acceptanceCriteria": [
+        "envtest harness starts/stops cleanly",
+        "Mock Nutanix server starts in-process for integration tests",
+        "Provider controller reconciles: connects, inventories, updates status",
+        "Handles bad credentials (sets Error condition)",
+        "Re-syncs on RefreshInterval",
+        "Finalizer prevents deletion while plans reference it",
+        "Integration test: create Provider CR + Secret -> verify status updated",
+        "make test-integration passes"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": "Depends on Story 2a, 3, 4, 6, and 8a. The Provider controller creates its own Nutanix client from the Provider's Secret."
+    },
+    {
+      "id": "US-012",
+      "title": "Plan Controller",
+      "description": "As a developer, I need the Plan controller to validate migration plans. Create internal/controller/plan_controller.go: reconcile MigrationPlan CRs. Resolve Provider reference -> read Secret -> create Nutanix client -> call GetVM(uuid) for each VM. Resolve NetworkMap and StorageMap. Run validation engine. Update per-VM status with concerns. Set phase (Pending -> Validating -> Ready or Error). NOTE: Plan controller creates its OWN Nutanix client from Provider credentials -- does NOT read from Provider status. Register in cmd/main.go.",
+      "acceptanceCriteria": [
+        "Resolves all references (Provider, NetworkMap, StorageMap)",
+        "Creates Nutanix client from Provider Secret",
+        "Fetches VM details via GetVM for each VM in plan",
+        "Runs validation for each VM",
+        "Per-VM status with concerns in plan status",
+        "Phase transitions: Pending -> Validating -> Ready or Error",
+        "Integration test: valid plan -> Ready, GPU VM -> Warning, unmapped storage -> Error"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": "Depends on Story 10 and Story 11."
+    },
+    {
+      "id": "US-013a",
+      "title": "Migration Controller -- Pipeline Framework",
+      "description": "As a developer, I need the migration controller skeleton with state machine, phase tracking, concurrency, and error handling. Create internal/controller/migration_controller.go: reconcile Migration CRs. Phase enum: Pending, PreHook, StorePowerState, PowerOff, WaitForPowerOff, CreateSnapshot, ExportDisks, ImportDisks, CreateVM, StartVM, PostHook, Cleanup, Completed, Failed. All phases return PhaseResult{Completed: true} (stubs). MaxInFlight scheduler. Cancellation. Finalizer (vma.nutanix.io/migration-protection). IDEMPOTENCY: each phase checks for existing resources before creating; persist task/snapshot/image UUIDs in VMMigrationStatus. Register in cmd/main.go.",
+      "acceptanceCriteria": [
+        "State machine advances through all phases (stubs succeed immediately)",
+        "Per-VM phase tracking in Migration status with persisted resource UUIDs",
+        "MaxInFlight limits concurrent VM migrations",
+        "Cancellation stops and cleans up individual VMs",
+        "Finalizer prevents deletion during running migration",
+        "Idempotent: re-reconciling does not create duplicate resources",
+        "make build && make test passes"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": "Depends on Story 12."
+    },
+    {
+      "id": "US-013b",
+      "title": "Migration Controller -- Disk Transfer Phases",
+      "description": "As a developer, I need the real disk transfer pipeline phases. Replace stubs: PowerOff (client.PowerOffVM, store original power state), CreateSnapshot (client.CreateRecoveryPoint), ExportDisks (client.CreateImageFromDisk for each disk -- if fails, phase fails with error; fallback clone path deferred). Create internal/transfer/manager.go and datavolume.go: CDI DataVolume with HTTP source URL to Prism image download, credential secret (accessKeyId/secretKey format), CA ConfigMap if custom CA, owner reference to Migration CR, volumeMode/accessMode from StorageMap. ImportDisks: create DataVolumes, poll DV status for progress percentage.",
+      "acceptanceCriteria": [
+        "PowerOff calls Nutanix API with task polling",
+        "Snapshot created and UUID persisted in status",
+        "Image created from snapshot vDisk",
+        "CDI DataVolume created with correct HTTP source, credentials, CA config, storage config",
+        "Owner reference set on DataVolume -> Migration CR",
+        "Credential secret and CA ConfigMap created and cleaned up",
+        "Progress percentage tracked from DataVolume status",
+        "On failure: restore source VM power state, clean up snapshots/images",
+        "Unit tests for transfer manager and datavolume builder"
+      ],
+      "priority": 16,
+      "passes": false,
+      "notes": "Depends on Story 13a, Story 5, and Story 9. Fallback export path (clone from recovery point) is deferred to keep scope manageable."
+    },
+    {
+      "id": "US-013c",
+      "title": "Migration Controller -- VM Creation & Cleanup",
+      "description": "As a developer, I need the VM creation and cleanup phases wired in, plus the full integration test. Replace CreateVM stub: call builder.Build() with Nutanix VM, maps, options. Create KubeVirt VirtualMachine CR with NO owner reference (outlives Migration). Replace StartVM: set spec.running per targetPowerState. Replace Cleanup: delete temp Nutanix images, snapshots, credential secrets. Replace Failed: clean up DataVolumes, PVCs, snapshots, images, secrets; restore source power state. Create test/integration/migration_test.go: full cold migration against mock+envtest.",
+      "acceptanceCriteria": [
+        "KubeVirt VM created with correct metadata translation from builder",
+        "VM running state matches targetPowerState",
+        "Cleanup deletes temporary Nutanix resources (images, snapshots, secrets)",
+        "Failure cleanup is thorough (no leaked resources)",
+        "Integration test: end-to-end cold migration against mock + envtest",
+        "make test-integration passes"
+      ],
+      "priority": 17,
+      "passes": false,
+      "notes": "Depends on Story 13b."
+    },
+    {
+      "id": "US-014",
+      "title": "Migration Controller -- Warm Migration (Experimental)",
+      "description": "As a developer, I need warm migration support (experimental -- depends on unverified Nutanix API assumptions). Extend migration controller: warm state machine (BulkCopy via CDI DV -> PrecopyLoop: CreateSnapshot -> ComputeCBT -> TransferDelta -> DeleteOldSnapshot -> repeat at configurable interval -> Cutover: PowerOff -> FinalSnapshot -> FinalDelta -> CreateVM -> StartVM). Create internal/transfer/delta.go: delta transfer pod spec (busybox+dd for MVP). DataVolume created before BulkCopy at full disk size. Wait for CDI DV Succeeded before first precopy. Cutover triggered by spec.cutover timestamp.",
+      "acceptanceCriteria": [
+        "Initial bulk copy via CDI DataVolume",
+        "Precopy loop creates snapshots and computes CBT deltas",
+        "Delta transfer pod spec generated with correct PVC mount and offsets",
+        "Precopy repeats at configurable interval (default 30m)",
+        "Cutover triggered by spec.cutover timestamp",
+        "Progress tracking: precopy rounds, cumulative bytes, last delta size",
+        "Integration test with mock CBT data"
+      ],
+      "priority": 18,
+      "passes": false,
+      "notes": "Depends on Story 13c, Story 7, Story 8b. EXPERIMENTAL: warm migration depends on unverified Nutanix Image Service Range header support. See PRD FR-5 warning."
+    },
+    {
+      "id": "US-015",
+      "title": "Hook System",
+      "description": "As a developer, I need pre/post migration hooks. Create internal/controller/hook_runner.go: create K8s Job from Hook CR spec, ConfigMap with migration context (VM details JSON, plan details JSON) mounted at /tmp/hook/, watch Job status, retry on failure (max 3). Wire PreHook and PostHook phases in migration state machine (replace stubs).",
+      "acceptanceCriteria": [
+        "Hook Job created with correct image, service account, deadline",
+        "ConfigMap with migration context mounted at /tmp/hook/",
+        "Retry on failure (3 attempts before blocking pipeline)",
+        "PreHook blocks pipeline until Job succeeds",
+        "PostHook runs after CreateVM",
+        "Integration test with busybox hook image"
+      ],
+      "priority": 19,
+      "passes": false,
+      "notes": "Depends on Story 13a."
+    },
+    {
+      "id": "US-016",
+      "title": "kubectl-vma Plugin",
+      "description": "As a developer, I need a kubectl plugin for CLI interaction. Create cmd/kubectl-vma/main.go: cobra-based CLI. Subcommands: inventory (read Provider status, table output), plan (read Plan status), migrate (create Migration CR), status (read Migration status with per-VM pipeline progress), cancel (patch Migration cancel list). Use text/tabwriter for table output.",
+      "acceptanceCriteria": [
+        "go build -o kubectl-vma ./cmd/kubectl-vma/ produces binary",
+        "inventory command displays VMs with UUID, name, CPU, memory, disk count",
+        "status command displays per-VM pipeline phases with progress",
+        "migrate command creates a Migration CR",
+        "cancel command patches Migration cancel list",
+        "Unit tests for output formatting"
+      ],
+      "priority": 20,
+      "passes": false,
+      "notes": "Depends on Story 12."
+    },
+    {
+      "id": "US-017",
+      "title": "Observability -- Events, Logging, Metrics",
+      "description": "As a developer, I need observability in the operator. Add Kubernetes Events via record.EventRecorder: MigrationStarted, PhaseTransition, MigrationCompleted, MigrationFailed. Add structured logging via logr with fields: migration, vm, phase, duration. Add Prometheus metrics via prometheus/client_golang: vma_migrations_total, vma_migration_duration_seconds, vma_disk_transfer_bytes, vma_active_migrations. Serve /metrics endpoint.",
+      "acceptanceCriteria": [
+        "Events emitted for migration phase transitions",
+        "Structured log fields: migration name, VM name/UUID, phase, duration",
+        "Prometheus metrics registered and served on /metrics",
+        "Integration test verifies events emitted after migration"
+      ],
+      "priority": 21,
+      "passes": false,
+      "notes": "Depends on Story 13c."
+    },
+    {
+      "id": "US-018",
+      "title": "E2E Test Framework",
+      "description": "As a developer, I need E2E tests for real infrastructure validation. Create test/e2e/suite_test.go: Ginkgo suite, reads NUTANIX_PC_URL, NUTANIX_USERNAME, NUTANIX_PASSWORD, KUBEVIRT_KUBECONFIG from env. Skip if NUTANIX_E2E != true. Create test/e2e/cold_migration_test.go: find test VM, create Provider/Maps/Plan/Migration, wait for completion, verify KubeVirt VM exists. Create .github/workflows/e2e.yaml: manual dispatch with secrets. Cleanup after each test.",
+      "acceptanceCriteria": [
+        "Suite skips cleanly without NUTANIX_E2E=true",
+        "Cold migration test case (create all CRs, wait, verify VM)",
+        "Warm migration test case (gated behind warm migration being implemented)",
+        "Cleanup: delete migrated VMs, snapshots, images after each test",
+        "GitHub Actions workflow with manual dispatch trigger"
+      ],
+      "priority": 22,
+      "passes": false,
+      "notes": "Depends on Story 13c and Story 14 (for warm E2E case)."
+    },
+    {
+      "id": "US-019",
+      "title": "Documentation & Release",
+      "description": "As a developer, I need comprehensive documentation and a release pipeline. Update README.md: overview, architecture diagram, prerequisites, installation (make install && make deploy), quickstart (Provider -> Maps -> Plan -> Migration), CRD reference, configuration, troubleshooting. Create CONTRIBUTING.md: dev setup, testing, PR process. Create .github/workflows/release.yaml: on tag push (v*), build image, push to ghcr.io, create GitHub Release with changelog.",
+      "acceptanceCriteria": [
+        "README covers full user journey from install to migration",
+        "CONTRIBUTING.md covers dev setup, testing, PR process",
+        "GitHub Actions release workflow: tag -> build -> push image -> create release",
+        "CRD reference documentation for all 6 CRDs",
+        "Troubleshooting section with common issues",
+        "make build && make test still passes"
+      ],
+      "priority": 23,
+      "passes": false,
+      "notes": "Depends on Story 16."
+    }
+  ]
+}

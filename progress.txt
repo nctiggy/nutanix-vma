@@ -1,0 +1,5 @@
+## Codebase Patterns
+
+(This section will be populated by Ralph as it discovers reusable patterns during implementation.)
+
+---
