@@ -4,11 +4,11 @@
   "totalDurationSeconds": 1825,
   "totalDurationHuman": "30m 25s",
   "maxIterations": 30,
-  "totalIterations": 15,
-  "storiesCompleted": 15,
+  "totalIterations": 16,
+  "storiesCompleted": 16,
   "storiesRemaining": 20,
-  "totalCIRuns": 15,
-  "ciPasses": 15,
+  "totalCIRuns": 16,
+  "ciPasses": 16,
   "ciFails": 0,
   "ciSkipped": 0,
   "noCommitIterations": 0,
@@ -192,6 +192,18 @@
       "endTime": "2026-03-20T08:16:08Z",
       "durationSeconds": 1325,
       "durationHuman": "22m 5s",
+      "attemptNumber": 1
+    },
+    {
+      "iteration": 13,
+      "storyId": "US-013b",
+      "storyTitle": "Migration Controller -- Disk Transfer Phases",
+      "result": "ci_pass",
+      "ciRunId": "23334966543",
+      "startTime": "2026-03-20T08:16:12Z",
+      "endTime": "2026-03-20T08:31:51Z",
+      "durationSeconds": 939,
+      "durationHuman": "15m 39s",
       "attemptNumber": 1
     }
   ]
