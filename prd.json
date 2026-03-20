@@ -282,7 +282,8 @@
       ],
       "priority": 16,
       "passes": false,
-      "notes": "Depends on Story 13a, Story 5, and Story 9. Fallback export path (clone from recovery point) is deferred to keep scope manageable."
+      "notes": "Depends on Story 13a, Story 5, and Story 9. Fallback export path (clone from recovery point) is deferred to keep scope manageable.",
+      "status": "completed"
     },
     {
       "id": "US-013c",
