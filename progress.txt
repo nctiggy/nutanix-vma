@@ -343,3 +343,41 @@ Iteration 5 [2026-03-20T06:07:48Z]: Nutanix API Client -- CBT/CRT COMPLETED. CI 
 ### Issues: None
 ---
 Iteration 6 [2026-03-20T06:22:01Z]: Mock Nutanix API Server -- Core COMPLETED. CI passed (run 23331562616). Attempt 1.
+
+---
+
+## US-009: VM Builder -- Metadata Translation
+
+### Status: Implemented, pending CI verification
+
+### What was done:
+- Created internal/builder/sanitize.go: SanitizeName() converts Nutanix VM names to valid K8s DNS-1123 labels (lowercase, replace spaces/underscores/parens with hyphens, collapse, trim, truncate 63 chars, collision resolution with -N suffix)
+- Created internal/builder/vm.go: Build(vm, networkMap, storageMap, opts) returns *kubevirtv1.VirtualMachine with full metadata translation:
+  - CPU: NumSockets->Sockets, NumCoresPerSocket->Cores, NumThreadsPerCore->Threads (default 1)
+  - Memory: bytes -> resource.Quantity (BinarySI)
+  - Firmware: LEGACY->BIOS, UEFI->EFI(SecureBoot=false), SECURE_BOOT->EFI(SecureBoot=true)+SMM
+  - Machine: Q35->q35, PC->pc (default q35)
+  - Disks: DISK only (CDROM skipped), SCSI/PCI->scsi bus, IDE/SATA->sata bus, default->virtio, bootOrder:1 on first disk when DISK in boot order
+  - NICs: pod network->masquerade (no MAC), multus->bridge (MAC preserved), subnet matched by ID or name
+  - Labels: vma.nutanix.io/source-vm-uuid and source-vm-name on both metadata and template.metadata
+  - RunStrategy: Halted (VM created stopped, started separately)
+  - Volume sources: PersistentVolumeClaim references (PVC names passed via BuildOptions)
+- Created sanitize_test.go: 14 tests (simple, uppercase, spaces, underscores, parens, unicode, leading/trailing hyphens, multiple hyphens, empty, special chars, truncation, truncation trailing hyphen, no collision, collision, multiple collisions, collision with truncation)
+- Created vm_test.go: 22 tests covering all acceptance criteria (single-disk Linux, CPU topology, CPU threads default, memory, firmware LEGACY/UEFI/SECURE_BOOT/nil, machine Q35/PC, boot order, multi-disk Windows+CDROM, IDE/SATA/PCI/unknown/nil bus types, pod/masquerade no MAC, multus/bridge MAC preserved, multi-NIC, unmapped NIC, network map by name, no PVC names, name collision, no boot order without DISK, disk-volume name consistency, interface-network name consistency)
+
+### Verification:
+- `make build` passes
+- `make test` passes (99.1% coverage on internal/builder)
+- `make lint` passes (0 issues)
+
+### Patterns discovered:
+- KubeVirt Volumes are on VirtualMachineInstanceSpec, not DomainSpec -- use result.Spec.Template.Spec.Volumes not Domain.Volumes
+- KubeVirt DiskDevice is an embedded struct -- staticcheck QF1008 prefers d.Disk.Bus over d.DiskDevice.Disk.Bus
+- goconst counts across all test files in a package -- extract repeated test strings to constants (testVMName, testBootTypeSecureBoot)
+- replace_all on Edit tool can replace inside const declarations -- be careful when the replacement target string appears in the const value itself
+- kubevirtv1.DiskBus constants: DiskBusSCSI, DiskBusSATA, DiskBusVirtio, DiskBusUSB
+- KubeVirt EFI.SecureBoot defaults to true if nil -- must explicitly set false for UEFI without secure boot
+- SMM (System Management Mode) FeatureState required when SecureBoot is enabled
+- preallocate slices with make([]T, 0, len) to satisfy prealloc linter
+
+### Issues: None
