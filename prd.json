@@ -137,7 +137,8 @@
       ],
       "priority": 8,
       "passes": false,
-      "notes": "Depends on Story 5 and Story 6. This is for warm migration (experimental) but the client code is needed by the mock server."
+      "notes": "Depends on Story 5 and Story 6. This is for warm migration (experimental) but the client code is needed by the mock server.",
+      "status": "completed"
     },
     {
       "id": "US-008a",

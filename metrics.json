@@ -4,11 +4,11 @@
   "totalDurationSeconds": 1825,
   "totalDurationHuman": "30m 25s",
   "maxIterations": 30,
-  "totalIterations": 6,
-  "storiesCompleted": 6,
+  "totalIterations": 7,
+  "storiesCompleted": 7,
   "storiesRemaining": 20,
-  "totalCIRuns": 6,
-  "ciPasses": 6,
+  "totalCIRuns": 7,
+  "ciPasses": 7,
   "ciFails": 0,
   "ciSkipped": 0,
   "noCommitIterations": 0,
@@ -84,6 +84,18 @@
       "endTime": "2026-03-20T05:45:07Z",
       "durationSeconds": 543,
       "durationHuman": "9m 3s",
+      "attemptNumber": 1
+    },
+    {
+      "iteration": 4,
+      "storyId": "US-006",
+      "storyTitle": "Nutanix API Client -- Networking, Storage & Cluster Discovery",
+      "result": "ci_pass",
+      "ciRunId": "23330980067",
+      "startTime": "2026-03-20T05:45:11Z",
+      "endTime": "2026-03-20T05:56:46Z",
+      "durationSeconds": 695,
+      "durationHuman": "11m 35s",
       "attemptNumber": 1
     }
   ]

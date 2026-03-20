@@ -309,3 +309,5 @@ Iteration 4 [2026-03-20T05:56:46Z]: Nutanix API Client -- Networking, Storage & 
 - Store.GetTask advances task lifecycle on each call -- the mock task transitions are driven by poll count, matching real Nutanix async task behavior
 
 ### Issues: None
+---
+Iteration 5 [2026-03-20T06:07:48Z]: Nutanix API Client -- CBT/CRT COMPLETED. CI passed (run 23331232731). Attempt 1.
