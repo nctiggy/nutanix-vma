@@ -177,3 +177,5 @@ Iteration 5: US-003 lint fix applied.
 - GetVMPowerState reuses GetVM (no separate API endpoint)
 - POST power operations should send empty body `{}` to be API-correct and avoid unparam lint
 - golangci-lint unparam checks if function params always receive same value -- pass real bodies to avoid
+---
+Iteration 1 [2026-03-20T05:25:05Z]: Nutanix API Client -- Core + Auth COMPLETED. CI passed (run 23330271648). Attempt 1.

@@ -72,7 +72,8 @@
       ],
       "priority": 4,
       "passes": false,
-      "notes": "Depends on Story 1. Does NOT depend on CRD stories. Forward-declared types are minimal -- full struct fields added in Story 4."
+      "notes": "Depends on Story 1. Does NOT depend on CRD stories. Forward-declared types are minimal -- full struct fields added in Story 4.",
+      "status": "completed"
     },
     {
       "id": "US-004",
