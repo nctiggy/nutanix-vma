@@ -4,11 +4,11 @@
   "totalDurationSeconds": 1825,
   "totalDurationHuman": "30m 25s",
   "maxIterations": 30,
-  "totalIterations": 13,
-  "storiesCompleted": 13,
+  "totalIterations": 14,
+  "storiesCompleted": 14,
   "storiesRemaining": 20,
-  "totalCIRuns": 13,
-  "ciPasses": 13,
+  "totalCIRuns": 14,
+  "ciPasses": 14,
   "ciFails": 0,
   "ciSkipped": 0,
   "noCommitIterations": 0,
@@ -168,6 +168,18 @@
       "endTime": "2026-03-20T07:37:57Z",
       "durationSeconds": 1425,
       "durationHuman": "23m 45s",
+      "attemptNumber": 1
+    },
+    {
+      "iteration": 11,
+      "storyId": "US-012",
+      "storyTitle": "Plan Controller",
+      "result": "ci_pass",
+      "ciRunId": "23333867736",
+      "startTime": "2026-03-20T07:38:00Z",
+      "endTime": "2026-03-20T07:54:00Z",
+      "durationSeconds": 960,
+      "durationHuman": "16m 0s",
       "attemptNumber": 1
     }
   ]
