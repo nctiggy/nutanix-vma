@@ -217,6 +217,10 @@ spec:
                       - StartVM
                       - PostHook
                       - Cleanup
+                      - BulkCopy
+                      - WaitBulkCopy
+                      - Precopy
+                      - FinalSync
                       - Completed
                       - Failed
                       - Cancelled
@@ -239,16 +243,54 @@ spec:
                     warm:
                       description: Warm tracks warm migration-specific progress.
                       properties:
+                        baseImageUUIDs:
+                          description: BaseImageUUIDs are the images from the baseline
+                            snapshot.
+                          items:
+                            type: string
+                          type: array
+                        baseSnapshotUUID:
+                          description: BaseSnapshotUUID is the snapshot used as CBT
+                            baseline for the next round.
+                          type: string
                         cumulativeBytes:
                           description: CumulativeBytes is the total bytes transferred
                             across all rounds.
                           format: int64
                           type: integer
+                        deltaBytes:
+                          description: DeltaBytes is the cumulative delta bytes for
+                            the current round.
+                          format: int64
+                          type: integer
+                        deltaDiskIndex:
+                          description: DeltaDiskIndex tracks which disk is being processed
+                            in the current round.
+                          type: integer
+                        deltaImageUUIDs:
+                          description: DeltaImageUUIDs are the images exported for
+                            the current round.
+                          items:
+                            type: string
+                          type: array
+                        deltaPodName:
+                          description: DeltaPodName is the name of the active delta
+                            transfer pod.
+                          type: string
+                        deltaSnapshotUUID:
+                          description: DeltaSnapshotUUID is the snapshot for the current
+                            active round.
+                          type: string
                         lastDeltaBytes:
                           description: LastDeltaBytes is the size of the last delta
                             transfer.
                           format: int64
                           type: integer
+                        lastPrecopyTime:
+                          description: LastPrecopyTime is when the last precopy round
+                            completed.
+                          format: date-time
+                          type: string
                         precopyRounds:
                           description: PrecopyRounds is the number of precopy rounds
                             completed.

@@ -54,11 +54,19 @@ type fakeNutanixClient struct {
 	powerStateErr    error
 	createRPErr      error
 	createRPUUID     string
+	createRPIdx      int
+	createRPUUIDs    []string
 	createImageErr   error
 	createImageUUIDs []string
 	createImageIdx   int
 	deleteRPErr      error
 	deleteImageErr   error
+
+	// CBT behavior (warm migration)
+	cbtInfo        *nutanix.CBTClusterInfo
+	cbtErr         error
+	changedRegions *nutanix.ChangedRegions
+	changedRegErr  error
 }
 
 func (f *fakeNutanixClient) ListVMs(_ context.Context) ([]nutanix.VM, error) {
@@ -102,6 +110,11 @@ func (f *fakeNutanixClient) GetVMPowerState(_ context.Context, _ string) (nutani
 func (f *fakeNutanixClient) CreateRecoveryPoint(_ context.Context, _, _ string) (string, error) {
 	if f.createRPErr != nil {
 		return "", f.createRPErr
+	}
+	if len(f.createRPUUIDs) > 0 && f.createRPIdx < len(f.createRPUUIDs) {
+		uuid := f.createRPUUIDs[f.createRPIdx]
+		f.createRPIdx++
+		return uuid, nil
 	}
 	uuid := f.createRPUUID
 	if uuid == "" {
@@ -151,11 +164,31 @@ func (f *fakeNutanixClient) DeleteVM(_ context.Context, _ string) error {
 }
 
 func (f *fakeNutanixClient) DiscoverClusterForCBT(_ context.Context, _ string) (*nutanix.CBTClusterInfo, error) {
-	return nil, errors.New("not implemented")
+	if f.cbtErr != nil {
+		return nil, f.cbtErr
+	}
+	if f.cbtInfo != nil {
+		return f.cbtInfo, nil
+	}
+	return &nutanix.CBTClusterInfo{
+		PrismElementURL: "https://pe.example.com:9440",
+		JWTToken:        "mock-jwt",
+	}, nil
 }
 
 func (f *fakeNutanixClient) GetChangedRegions(_ context.Context, _, _, _, _, _ string, _, _, _ int64) (*nutanix.ChangedRegions, error) {
-	return nil, errors.New("not implemented")
+	if f.changedRegErr != nil {
+		return nil, f.changedRegErr
+	}
+	if f.changedRegions != nil {
+		return f.changedRegions, nil
+	}
+	return &nutanix.ChangedRegions{
+		Regions: []nutanix.ChangedRegion{
+			{Offset: 0, Length: 65536},
+			{Offset: 131072, Length: 65536},
+		},
+	}, nil
 }
 
 func (f *fakeNutanixClient) ListSubnets(_ context.Context) ([]nutanix.Subnet, error) {
@@ -178,7 +211,7 @@ func newTestScheme() *runtime.Scheme {
 }
 
 func newProviderAndSecret() (*vmav1alpha1.NutanixProvider, *corev1.Secret) {
-	ns := "default"
+	ns := migTestNS
 	provider := &vmav1alpha1.NutanixProvider{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-provider",

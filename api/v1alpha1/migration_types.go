@@ -50,7 +50,7 @@ const (
 )
 
 // VMMigrationPhase represents the phase of a single VM's migration pipeline.
-// +kubebuilder:validation:Enum=Pending;PreHook;StorePowerState;PowerOff;WaitForPowerOff;CreateSnapshot;ExportDisks;ImportDisks;CreateVM;StartVM;PostHook;Cleanup;Completed;Failed;Cancelled
+// +kubebuilder:validation:Enum=Pending;PreHook;StorePowerState;PowerOff;WaitForPowerOff;CreateSnapshot;ExportDisks;ImportDisks;CreateVM;StartVM;PostHook;Cleanup;BulkCopy;WaitBulkCopy;Precopy;FinalSync;Completed;Failed;Cancelled
 type VMMigrationPhase string
 
 const (
@@ -66,6 +66,10 @@ const (
 	VMPhaseStartVM         VMMigrationPhase = "StartVM"
 	VMPhasePostHook        VMMigrationPhase = "PostHook"
 	VMPhaseCleanup         VMMigrationPhase = "Cleanup"
+	VMPhaseBulkCopy        VMMigrationPhase = "BulkCopy"
+	VMPhaseWaitBulkCopy    VMMigrationPhase = "WaitBulkCopy"
+	VMPhasePrecopy         VMMigrationPhase = "Precopy"
+	VMPhaseFinalSync       VMMigrationPhase = "FinalSync"
 	VMPhaseCompleted       VMMigrationPhase = "Completed"
 	VMPhaseFailed          VMMigrationPhase = "Failed"
 	VMPhaseCancelled       VMMigrationPhase = "Cancelled"
@@ -84,6 +88,38 @@ type WarmMigrationStatus struct {
 	// LastDeltaBytes is the size of the last delta transfer.
 	// +optional
 	LastDeltaBytes int64 `json:"lastDeltaBytes,omitempty"`
+
+	// BaseSnapshotUUID is the snapshot used as CBT baseline for the next round.
+	// +optional
+	BaseSnapshotUUID string `json:"baseSnapshotUUID,omitempty"`
+
+	// BaseImageUUIDs are the images from the baseline snapshot.
+	// +optional
+	BaseImageUUIDs []string `json:"baseImageUUIDs,omitempty"`
+
+	// LastPrecopyTime is when the last precopy round completed.
+	// +optional
+	LastPrecopyTime *metav1.Time `json:"lastPrecopyTime,omitempty"`
+
+	// DeltaSnapshotUUID is the snapshot for the current active round.
+	// +optional
+	DeltaSnapshotUUID string `json:"deltaSnapshotUUID,omitempty"`
+
+	// DeltaImageUUIDs are the images exported for the current round.
+	// +optional
+	DeltaImageUUIDs []string `json:"deltaImageUUIDs,omitempty"`
+
+	// DeltaPodName is the name of the active delta transfer pod.
+	// +optional
+	DeltaPodName string `json:"deltaPodName,omitempty"`
+
+	// DeltaDiskIndex tracks which disk is being processed in the current round.
+	// +optional
+	DeltaDiskIndex int `json:"deltaDiskIndex,omitempty"`
+
+	// DeltaBytes is the cumulative delta bytes for the current round.
+	// +optional
+	DeltaBytes int64 `json:"deltaBytes,omitempty"`
 }
 
 // VMMigrationStatus captures the migration state for a single VM.

@@ -64,6 +64,24 @@ var phaseOrder = []vmav1alpha1.VMMigrationPhase{
 	vmav1alpha1.VMPhaseCompleted,
 }
 
+// warmPhaseOrder defines the pipeline phase sequence for warm migration.
+var warmPhaseOrder = []vmav1alpha1.VMMigrationPhase{
+	vmav1alpha1.VMPhasePending,
+	vmav1alpha1.VMPhasePreHook,
+	vmav1alpha1.VMPhaseStorePowerState,
+	vmav1alpha1.VMPhaseBulkCopy,
+	vmav1alpha1.VMPhaseWaitBulkCopy,
+	vmav1alpha1.VMPhasePrecopy,
+	vmav1alpha1.VMPhasePowerOff,
+	vmav1alpha1.VMPhaseWaitForPowerOff,
+	vmav1alpha1.VMPhaseFinalSync,
+	vmav1alpha1.VMPhaseCreateVM,
+	vmav1alpha1.VMPhaseStartVM,
+	vmav1alpha1.VMPhasePostHook,
+	vmav1alpha1.VMPhaseCleanup,
+	vmav1alpha1.VMPhaseCompleted,
+}
+
 // PhaseResult represents the outcome of executing a migration phase.
 type PhaseResult struct {
 	// Completed indicates the phase finished successfully.
@@ -110,6 +128,7 @@ func SetupMigrationController(mgr ctrl.Manager) error {
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;create;delete
 // +kubebuilder:rbac:groups=cdi.kubevirt.io,resources=datavolumes,verbs=get;list;create;delete
 // +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachines,verbs=get;create;update
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;create;delete
 
 // Reconcile handles Migration reconciliation.
 func (r *MigrationReconciler) Reconcile(
@@ -396,6 +415,11 @@ func (r *MigrationReconciler) advanceSingleVM(
 	vmStatus *vmav1alpha1.VMMigrationStatus,
 	mctx *migrationContext,
 ) bool {
+	order := phaseOrder
+	if mctx.Plan.Spec.Type == vmav1alpha1.MigrationTypeWarm {
+		order = warmPhaseOrder
+	}
+
 	for {
 		if isTerminalVMPhase(vmStatus.Phase) {
 			return false
@@ -415,7 +439,7 @@ func (r *MigrationReconciler) advanceSingleVM(
 		}
 
 		// Advance to next phase
-		next := nextPhase(vmStatus.Phase)
+		next := nextPhaseInOrder(vmStatus.Phase, order)
 		vmStatus.Phase = next
 		if next == vmav1alpha1.VMPhaseCompleted {
 			now := metav1.Now()
@@ -450,6 +474,14 @@ func (r *MigrationReconciler) executePhase(
 		return r.phaseStartVM(ctx, vmStatus, mctx)
 	case vmav1alpha1.VMPhaseCleanup:
 		return r.phaseCleanup(ctx, vmStatus, mctx)
+	case vmav1alpha1.VMPhaseBulkCopy:
+		return r.phaseBulkCopy(ctx, vmStatus, mctx)
+	case vmav1alpha1.VMPhaseWaitBulkCopy:
+		return r.phaseWaitBulkCopy(ctx, vmStatus, mctx)
+	case vmav1alpha1.VMPhasePrecopy:
+		return r.phasePrecopy(ctx, vmStatus, mctx)
+	case vmav1alpha1.VMPhaseFinalSync:
+		return r.phaseFinalSync(ctx, vmStatus, mctx)
 	default:
 		// PreHook, PostHook are stubs (US-015)
 		return PhaseResult{Completed: true}
@@ -892,6 +924,53 @@ func (r *MigrationReconciler) cleanupFailedVM(
 				"vm", vmStatus.ID)
 		}
 	}
+
+	// Clean up warm migration resources
+	if vmStatus.Warm != nil {
+		warm := vmStatus.Warm
+		// Delete active delta pod and its ConfigMap
+		if warm.DeltaPodName != "" {
+			r.deletePod(ctx, warm.DeltaPodName, targetNS)
+			r.deleteConfigMap(ctx,
+				warm.DeltaPodName+"-regions", targetNS)
+		}
+		// Delete delta round images
+		for _, uuid := range warm.DeltaImageUUIDs {
+			if err := mctx.NutanixClient.DeleteImage(
+				ctx, uuid); err != nil {
+				logger.Error(err,
+					"FailureCleanup: delete delta image",
+					"uuid", uuid)
+			}
+		}
+		// Delete delta round snapshot
+		if warm.DeltaSnapshotUUID != "" {
+			if err := mctx.NutanixClient.DeleteRecoveryPoint(
+				ctx, warm.DeltaSnapshotUUID); err != nil {
+				logger.Error(err,
+					"FailureCleanup: delete delta snapshot",
+					"uuid", warm.DeltaSnapshotUUID)
+			}
+		}
+		// Delete base images
+		for _, uuid := range warm.BaseImageUUIDs {
+			if err := mctx.NutanixClient.DeleteImage(
+				ctx, uuid); err != nil {
+				logger.Error(err,
+					"FailureCleanup: delete base image",
+					"uuid", uuid)
+			}
+		}
+		// Delete base snapshot
+		if warm.BaseSnapshotUUID != "" {
+			if err := mctx.NutanixClient.DeleteRecoveryPoint(
+				ctx, warm.BaseSnapshotUUID); err != nil {
+				logger.Error(err,
+					"FailureCleanup: delete base snapshot",
+					"uuid", warm.BaseSnapshotUUID)
+			}
+		}
+	}
 }
 
 // updateOverallStatus derives the overall migration phase from per-VM statuses.
@@ -1008,13 +1087,21 @@ func (r *MigrationReconciler) setMigrationFailed(
 	return ctrl.Result{}, nil
 }
 
-// nextPhase returns the next phase in the pipeline sequence.
+// nextPhase returns the next phase in the cold pipeline sequence.
 func nextPhase(
 	current vmav1alpha1.VMMigrationPhase,
 ) vmav1alpha1.VMMigrationPhase {
-	for i, p := range phaseOrder {
-		if p == current && i+1 < len(phaseOrder) {
-			return phaseOrder[i+1]
+	return nextPhaseInOrder(current, phaseOrder)
+}
+
+// nextPhaseInOrder returns the next phase in the given phase order.
+func nextPhaseInOrder(
+	current vmav1alpha1.VMMigrationPhase,
+	order []vmav1alpha1.VMMigrationPhase,
+) vmav1alpha1.VMMigrationPhase {
+	for i, p := range order {
+		if p == current && i+1 < len(order) {
+			return order[i+1]
 		}
 	}
 	return current
@@ -1058,6 +1145,680 @@ func shortID(id string) string {
 		return id[:8]
 	}
 	return id
+}
+
+// --- Warm migration phases ---
+
+// phaseBulkCopy creates the initial snapshot, exports disk images,
+// creates CDI DataVolumes, and initializes warm tracking state.
+func (r *MigrationReconciler) phaseBulkCopy(
+	ctx context.Context,
+	vmStatus *vmav1alpha1.VMMigrationStatus,
+	mctx *migrationContext,
+) PhaseResult {
+	// Create snapshot (idempotent)
+	if vmStatus.SnapshotUUID == "" {
+		name := fmt.Sprintf("vma-%s-%s",
+			mctx.Migration.Name, shortID(vmStatus.ID))
+		uuid, err := mctx.NutanixClient.CreateRecoveryPoint(
+			ctx, vmStatus.ID, name)
+		if err != nil {
+			return PhaseResult{Error: fmt.Errorf(
+				"BulkCopy: create snapshot: %w", err)}
+		}
+		vmStatus.SnapshotUUID = uuid
+	}
+
+	// Export disks (idempotent)
+	vm, err := mctx.NutanixClient.GetVM(ctx, vmStatus.ID)
+	if err != nil {
+		return PhaseResult{Error: fmt.Errorf(
+			"BulkCopy: get VM: %w", err)}
+	}
+	dataDisks := filterDataDisks(vm.Disks)
+
+	if len(vmStatus.ImageUUIDs) < len(dataDisks) {
+		clusterRef := ""
+		if vm.Cluster != nil {
+			clusterRef = vm.Cluster.ExtID
+		}
+		for i, disk := range dataDisks {
+			if i < len(vmStatus.ImageUUIDs) {
+				continue
+			}
+			diskUUID := getDiskUUID(disk)
+			name := fmt.Sprintf("vma-%s-%s-disk-%d",
+				mctx.Migration.Name,
+				shortID(vmStatus.ID), i)
+			imageUUID, createErr :=
+				mctx.NutanixClient.CreateImageFromDisk(
+					ctx, name, diskUUID, clusterRef)
+			if createErr != nil {
+				return PhaseResult{Error: fmt.Errorf(
+					"BulkCopy: export disk %d: %w",
+					i, createErr)}
+			}
+			vmStatus.ImageUUIDs = append(
+				vmStatus.ImageUUIDs, imageUUID)
+		}
+	}
+
+	// Create DataVolumes (idempotent)
+	result := r.createDataVolumes(ctx, vmStatus, mctx,
+		dataDisks)
+	if result.Error != nil {
+		return result
+	}
+
+	// Initialize warm status
+	if vmStatus.Warm == nil {
+		vmStatus.Warm = &vmav1alpha1.WarmMigrationStatus{}
+	}
+	vmStatus.Warm.BaseSnapshotUUID = vmStatus.SnapshotUUID
+	vmStatus.Warm.BaseImageUUIDs = make(
+		[]string, len(vmStatus.ImageUUIDs))
+	copy(vmStatus.Warm.BaseImageUUIDs, vmStatus.ImageUUIDs)
+
+	return PhaseResult{Completed: true}
+}
+
+// phaseWaitBulkCopy polls DataVolume status until all succeed.
+func (r *MigrationReconciler) phaseWaitBulkCopy(
+	ctx context.Context,
+	vmStatus *vmav1alpha1.VMMigrationStatus,
+	mctx *migrationContext,
+) PhaseResult {
+	return r.pollDataVolumes(ctx, vmStatus, mctx)
+}
+
+// phasePrecopy runs incremental sync rounds. Each round:
+// creates a snapshot, exports images, computes CBT deltas,
+// and creates a delta transfer pod. Loops until cutover time.
+func (r *MigrationReconciler) phasePrecopy(
+	ctx context.Context,
+	vmStatus *vmav1alpha1.VMMigrationStatus,
+	mctx *migrationContext,
+) PhaseResult {
+	logger := log.FromContext(ctx)
+	warm := vmStatus.Warm
+	if warm == nil {
+		return PhaseResult{Error: fmt.Errorf(
+			"precopy: warm status not initialized")}
+	}
+
+	// Check cutover
+	if isCutoverTime(mctx.Migration) {
+		// Wait for any active pod to finish
+		if warm.DeltaPodName != "" {
+			phase := r.getPodPhase(ctx,
+				warm.DeltaPodName,
+				mctx.Plan.Spec.TargetNamespace)
+			if phase == corev1.PodRunning ||
+				phase == corev1.PodPending {
+				return PhaseResult{Completed: false}
+			}
+		}
+		logger.Info("Cutover time reached")
+		return PhaseResult{Completed: true}
+	}
+
+	// Check active delta pod
+	if warm.DeltaPodName != "" {
+		return r.checkDeltaPod(ctx, vmStatus, mctx)
+	}
+
+	// Check MaxPrecopyRounds
+	maxRounds := 10
+	if mctx.Plan.Spec.WarmConfig != nil {
+		maxRounds = mctx.Plan.Spec.WarmConfig.MaxPrecopyRounds
+	}
+	if warm.PrecopyRounds >= maxRounds {
+		logger.Info("MaxPrecopyRounds reached, waiting for cutover",
+			"rounds", warm.PrecopyRounds,
+			"max", maxRounds)
+		return PhaseResult{Completed: false}
+	}
+
+	// Check interval
+	interval := 30 * time.Minute
+	if mctx.Plan.Spec.WarmConfig != nil &&
+		mctx.Plan.Spec.WarmConfig.PrecopyInterval != "" {
+		parsed, parseErr := time.ParseDuration(
+			mctx.Plan.Spec.WarmConfig.PrecopyInterval)
+		if parseErr == nil {
+			interval = parsed
+		}
+	}
+	if warm.LastPrecopyTime != nil &&
+		time.Since(warm.LastPrecopyTime.Time) < interval {
+		return PhaseResult{Completed: false}
+	}
+
+	// Start new precopy round
+	return r.runDeltaRound(ctx, vmStatus, mctx,
+		fmt.Sprintf("pc%d", warm.PrecopyRounds+1),
+		r.finalizePrecopyRound)
+}
+
+// phaseFinalSync runs a final delta sync after cutover power-off.
+func (r *MigrationReconciler) phaseFinalSync(
+	ctx context.Context,
+	vmStatus *vmav1alpha1.VMMigrationStatus,
+	mctx *migrationContext,
+) PhaseResult {
+	warm := vmStatus.Warm
+	if warm == nil {
+		return PhaseResult{Error: fmt.Errorf(
+			"finalSync: warm status not initialized")}
+	}
+
+	// Check active delta pod
+	if warm.DeltaPodName != "" {
+		return r.checkDeltaPod(ctx, vmStatus, mctx)
+	}
+
+	return r.runDeltaRound(ctx, vmStatus, mctx,
+		"final", r.finalizeFinalSync)
+}
+
+// runDeltaRound executes a single delta transfer round:
+// snapshot -> export -> CBT -> delta pod for each disk.
+func (r *MigrationReconciler) runDeltaRound(
+	ctx context.Context,
+	vmStatus *vmav1alpha1.VMMigrationStatus,
+	mctx *migrationContext,
+	label string,
+	onComplete func(context.Context,
+		*vmav1alpha1.VMMigrationStatus,
+		*migrationContext) PhaseResult,
+) PhaseResult {
+	warm := vmStatus.Warm
+
+	// Create snapshot for this round
+	if warm.DeltaSnapshotUUID == "" {
+		name := fmt.Sprintf("vma-%s-%s-%s",
+			mctx.Migration.Name,
+			shortID(vmStatus.ID), label)
+		uuid, err := mctx.NutanixClient.CreateRecoveryPoint(
+			ctx, vmStatus.ID, name)
+		if err != nil {
+			return PhaseResult{Error: fmt.Errorf(
+				"%s: create snapshot: %w", label, err)}
+		}
+		warm.DeltaSnapshotUUID = uuid
+	}
+
+	// Export images from snapshot
+	vm, err := mctx.NutanixClient.GetVM(ctx, vmStatus.ID)
+	if err != nil {
+		return PhaseResult{Error: fmt.Errorf(
+			"%s: get VM: %w", label, err)}
+	}
+	dataDisks := filterDataDisks(vm.Disks)
+
+	if len(warm.DeltaImageUUIDs) < len(dataDisks) {
+		clusterRef := ""
+		if vm.Cluster != nil {
+			clusterRef = vm.Cluster.ExtID
+		}
+		for i, disk := range dataDisks {
+			if i < len(warm.DeltaImageUUIDs) {
+				continue
+			}
+			diskUUID := getDiskUUID(disk)
+			imgName := fmt.Sprintf("vma-%s-%s-%s-disk-%d",
+				mctx.Migration.Name,
+				shortID(vmStatus.ID), label, i)
+			imageUUID, createErr :=
+				mctx.NutanixClient.CreateImageFromDisk(
+					ctx, imgName, diskUUID, clusterRef)
+			if createErr != nil {
+				return PhaseResult{Error: fmt.Errorf(
+					"%s: export disk %d: %w",
+					label, i, createErr)}
+			}
+			warm.DeltaImageUUIDs = append(
+				warm.DeltaImageUUIDs, imageUUID)
+		}
+	}
+
+	// Process current disk
+	diskIdx := warm.DeltaDiskIndex
+	if diskIdx >= len(dataDisks) {
+		return onComplete(ctx, vmStatus, mctx)
+	}
+
+	// CBT: discover cluster + get changed regions
+	cbtInfo, cbtErr := mctx.NutanixClient.DiscoverClusterForCBT(
+		ctx, vmStatus.ID)
+	if cbtErr != nil {
+		return PhaseResult{Error: fmt.Errorf(
+			"%s: CBT discover: %w", label, cbtErr)}
+	}
+
+	disk := dataDisks[diskIdx]
+	diskSize := getDiskSize(disk)
+
+	var allRegions []nutanix.ChangedRegion
+	var cbtOffset int64
+	for {
+		regions, regErr :=
+			mctx.NutanixClient.GetChangedRegions(
+				ctx, cbtInfo.PrismElementURL,
+				cbtInfo.JWTToken, vmStatus.ID,
+				warm.DeltaSnapshotUUID,
+				warm.BaseSnapshotUUID,
+				cbtOffset, diskSize,
+				transfer.CBTBlockSize)
+		if regErr != nil {
+			return PhaseResult{Error: fmt.Errorf(
+				"%s: CBT regions: %w", label, regErr)}
+		}
+		allRegions = append(allRegions, regions.Regions...)
+		if regions.NextOffset == nil {
+			break
+		}
+		cbtOffset = *regions.NextOffset
+	}
+
+	deltaBytes := transfer.DeltaBytes(allRegions)
+	warm.DeltaBytes += deltaBytes
+
+	// Skip disk if no changed regions
+	if len(allRegions) == 0 {
+		warm.DeltaDiskIndex++
+		if warm.DeltaDiskIndex >= len(dataDisks) {
+			return onComplete(ctx, vmStatus, mctx)
+		}
+		return PhaseResult{Completed: false}
+	}
+
+	// Create delta transfer pod
+	targetNS := mctx.Plan.Spec.TargetNamespace
+	credSecretName := fmt.Sprintf("vma-%s-creds",
+		shortID(mctx.Migration.Name))
+	imageURL := mctx.TransferMgr.ImageDownloadURL(
+		warm.DeltaImageUUIDs[diskIdx])
+	podName := fmt.Sprintf("vma-%s-%s-%s-d%d",
+		shortID(mctx.Migration.Name),
+		shortID(vmStatus.ID), label, diskIdx)
+
+	ownerRef := metav1.OwnerReference{
+		APIVersion: vmav1alpha1.GroupVersion.String(),
+		Kind:       "Migration",
+		Name:       mctx.Migration.Name,
+		UID:        mctx.Migration.UID,
+	}
+
+	pod, regionsCM := transfer.BuildDeltaPod(
+		transfer.DeltaPodOptions{
+			Name:       podName,
+			Namespace:  targetNS,
+			PVCName:    vmStatus.DataVolumeNames[diskIdx],
+			ImageURL:   imageURL,
+			SecretName: credSecretName,
+			Regions:    allRegions,
+			OwnerRef:   ownerRef,
+		})
+
+	if err := r.Create(ctx, regionsCM); err != nil &&
+		!apierrors.IsAlreadyExists(err) {
+		return PhaseResult{Error: fmt.Errorf(
+			"%s: create regions ConfigMap: %w", label, err)}
+	}
+	if err := r.Create(ctx, pod); err != nil &&
+		!apierrors.IsAlreadyExists(err) {
+		return PhaseResult{Error: fmt.Errorf(
+			"%s: create delta pod: %w", label, err)}
+	}
+
+	warm.DeltaPodName = podName
+	return PhaseResult{Completed: false}
+}
+
+// checkDeltaPod checks the status of an active delta transfer pod.
+func (r *MigrationReconciler) checkDeltaPod(
+	ctx context.Context,
+	vmStatus *vmav1alpha1.VMMigrationStatus,
+	mctx *migrationContext,
+) PhaseResult {
+	warm := vmStatus.Warm
+	targetNS := mctx.Plan.Spec.TargetNamespace
+
+	phase := r.getPodPhase(ctx, warm.DeltaPodName, targetNS)
+	switch phase {
+	case corev1.PodSucceeded:
+		r.deletePod(ctx, warm.DeltaPodName, targetNS)
+		r.deleteConfigMap(ctx,
+			warm.DeltaPodName+"-regions", targetNS)
+		warm.DeltaPodName = ""
+
+		vm, getErr := mctx.NutanixClient.GetVM(
+			ctx, vmStatus.ID)
+		if getErr != nil {
+			return PhaseResult{Error: fmt.Errorf(
+				"delta pod: get VM: %w", getErr)}
+		}
+		dataDisks := filterDataDisks(vm.Disks)
+
+		warm.DeltaDiskIndex++
+		if warm.DeltaDiskIndex >= len(dataDisks) {
+			// All disks done; the caller (phasePrecopy
+			// or phaseFinalSync) will re-enter runDeltaRound
+			// which calls onComplete when diskIdx >= len.
+			return PhaseResult{Completed: false}
+		}
+		return PhaseResult{Completed: false}
+
+	case corev1.PodFailed:
+		return PhaseResult{Error: fmt.Errorf(
+			"delta pod %s failed", warm.DeltaPodName)}
+
+	default: // Pending, Running, Unknown
+		return PhaseResult{Completed: false}
+	}
+}
+
+// finalizePrecopyRound cleans up old base resources and updates stats.
+func (r *MigrationReconciler) finalizePrecopyRound(
+	ctx context.Context,
+	vmStatus *vmav1alpha1.VMMigrationStatus,
+	mctx *migrationContext,
+) PhaseResult {
+	logger := log.FromContext(ctx)
+	warm := vmStatus.Warm
+
+	// Delete old base snapshot
+	if warm.BaseSnapshotUUID != "" {
+		if err := mctx.NutanixClient.DeleteRecoveryPoint(
+			ctx, warm.BaseSnapshotUUID); err != nil {
+			logger.Error(err,
+				"Precopy: delete old base snapshot",
+				"uuid", warm.BaseSnapshotUUID)
+		}
+	}
+	// Delete old base images
+	for _, uuid := range warm.BaseImageUUIDs {
+		if err := mctx.NutanixClient.DeleteImage(
+			ctx, uuid); err != nil {
+			logger.Error(err,
+				"Precopy: delete old base image",
+				"uuid", uuid)
+		}
+	}
+
+	// Promote delta to base
+	warm.BaseSnapshotUUID = warm.DeltaSnapshotUUID
+	warm.BaseImageUUIDs = make(
+		[]string, len(warm.DeltaImageUUIDs))
+	copy(warm.BaseImageUUIDs, warm.DeltaImageUUIDs)
+
+	// Update stats
+	warm.PrecopyRounds++
+	warm.CumulativeBytes += warm.DeltaBytes
+	warm.LastDeltaBytes = warm.DeltaBytes
+	now := metav1.Now()
+	warm.LastPrecopyTime = &now
+
+	// Clear delta fields
+	warm.DeltaSnapshotUUID = ""
+	warm.DeltaImageUUIDs = nil
+	warm.DeltaPodName = ""
+	warm.DeltaDiskIndex = 0
+	warm.DeltaBytes = 0
+
+	logger.Info("Precopy round completed",
+		"round", warm.PrecopyRounds,
+		"deltaBytes", warm.LastDeltaBytes,
+		"cumulativeBytes", warm.CumulativeBytes)
+
+	return PhaseResult{Completed: false}
+}
+
+// finalizeFinalSync cleans up temporary resources after the final sync.
+func (r *MigrationReconciler) finalizeFinalSync(
+	ctx context.Context,
+	vmStatus *vmav1alpha1.VMMigrationStatus,
+	mctx *migrationContext,
+) PhaseResult {
+	logger := log.FromContext(ctx)
+	warm := vmStatus.Warm
+
+	// Delete base snapshot + images (no longer needed)
+	if warm.BaseSnapshotUUID != "" {
+		if err := mctx.NutanixClient.DeleteRecoveryPoint(
+			ctx, warm.BaseSnapshotUUID); err != nil {
+			logger.Error(err,
+				"FinalSync: delete base snapshot",
+				"uuid", warm.BaseSnapshotUUID)
+		}
+	}
+	for _, uuid := range warm.BaseImageUUIDs {
+		if err := mctx.NutanixClient.DeleteImage(
+			ctx, uuid); err != nil {
+			logger.Error(err,
+				"FinalSync: delete base image",
+				"uuid", uuid)
+		}
+	}
+
+	// Delete final round images + snapshot
+	for _, uuid := range warm.DeltaImageUUIDs {
+		if err := mctx.NutanixClient.DeleteImage(
+			ctx, uuid); err != nil {
+			logger.Error(err,
+				"FinalSync: delete delta image",
+				"uuid", uuid)
+		}
+	}
+	if warm.DeltaSnapshotUUID != "" {
+		if err := mctx.NutanixClient.DeleteRecoveryPoint(
+			ctx, warm.DeltaSnapshotUUID); err != nil {
+			logger.Error(err,
+				"FinalSync: delete delta snapshot",
+				"uuid", warm.DeltaSnapshotUUID)
+		}
+	}
+
+	// Update final stats
+	warm.CumulativeBytes += warm.DeltaBytes
+	warm.LastDeltaBytes = warm.DeltaBytes
+	warm.DeltaSnapshotUUID = ""
+	warm.DeltaImageUUIDs = nil
+	warm.DeltaDiskIndex = 0
+	warm.DeltaBytes = 0
+
+	return PhaseResult{Completed: true}
+}
+
+// createDataVolumes creates CDI DataVolumes for disk import (shared by
+// cold ImportDisks and warm BulkCopy).
+func (r *MigrationReconciler) createDataVolumes(
+	ctx context.Context,
+	vmStatus *vmav1alpha1.VMMigrationStatus,
+	mctx *migrationContext,
+	dataDisks []nutanix.Disk,
+) PhaseResult {
+	targetNS := mctx.Plan.Spec.TargetNamespace
+	migName := mctx.Migration.Name
+	ownerRef := metav1.OwnerReference{
+		APIVersion: vmav1alpha1.GroupVersion.String(),
+		Kind:       "Migration",
+		Name:       mctx.Migration.Name,
+		UID:        mctx.Migration.UID,
+	}
+
+	credSecretName := fmt.Sprintf("vma-%s-creds",
+		shortID(migName))
+	if err := mctx.TransferMgr.CreateCredentialSecret(
+		ctx, credSecretName, targetNS, ownerRef); err != nil {
+		return PhaseResult{Error: fmt.Errorf(
+			"create credential secret: %w", err)}
+	}
+
+	certConfigMapName := ""
+	if len(mctx.TransferMgr.CACert) > 0 {
+		certConfigMapName = fmt.Sprintf("vma-%s-ca",
+			shortID(migName))
+		if err := mctx.TransferMgr.CreateCAConfigMap(
+			ctx, certConfigMapName, targetNS,
+			ownerRef); err != nil {
+			return PhaseResult{Error: fmt.Errorf(
+				"create CA ConfigMap: %w", err)}
+		}
+	}
+
+	if len(vmStatus.DataVolumeNames) < len(vmStatus.ImageUUIDs) {
+		for i, imageUUID := range vmStatus.ImageUUIDs {
+			if i < len(vmStatus.DataVolumeNames) {
+				continue
+			}
+
+			dvName := fmt.Sprintf("vma-%s-%s-disk-%d",
+				migName, shortID(vmStatus.ID), i)
+
+			var storageDest *vmav1alpha1.StorageDestination
+			if i < len(dataDisks) {
+				storageDest = transfer.FindStorageMapping(
+					&dataDisks[i], mctx.StorageMap)
+			}
+
+			storageClass := "default"
+			volumeMode := corev1.PersistentVolumeFilesystem
+			accessMode := corev1.ReadWriteOnce
+			if storageDest != nil {
+				storageClass = storageDest.StorageClass
+				volumeMode = storageDest.VolumeMode
+				accessMode = storageDest.AccessMode
+			}
+
+			diskSize := int64(0)
+			if i < len(dataDisks) {
+				diskSize = getDiskSize(dataDisks[i])
+			}
+
+			opts := transfer.DataVolumeOptions{
+				Name:          dvName,
+				Namespace:     targetNS,
+				ImageURL:      mctx.TransferMgr.ImageDownloadURL(imageUUID),
+				DiskSizeBytes: diskSize,
+				StorageClass:  storageClass,
+				VolumeMode:    volumeMode,
+				AccessMode:    accessMode,
+				SecretName:    credSecretName,
+				CertConfigMap: certConfigMapName,
+				OwnerRef:      ownerRef,
+			}
+
+			if err := mctx.TransferMgr.CreateDataVolume(
+				ctx, opts); err != nil {
+				return PhaseResult{Error: fmt.Errorf(
+					"DataVolume %s: %w", dvName, err)}
+			}
+			vmStatus.DataVolumeNames = append(
+				vmStatus.DataVolumeNames, dvName)
+		}
+	}
+
+	return PhaseResult{Completed: true}
+}
+
+// pollDataVolumes checks DataVolume status. Returns Completed when
+// all DVs succeed, error on failure, false while in progress.
+func (r *MigrationReconciler) pollDataVolumes(
+	ctx context.Context,
+	vmStatus *vmav1alpha1.VMMigrationStatus,
+	mctx *migrationContext,
+) PhaseResult {
+	allSucceeded := true
+	for _, dvName := range vmStatus.DataVolumeNames {
+		progress, pollErr :=
+			mctx.TransferMgr.GetDataVolumeProgress(
+				ctx, dvName,
+				mctx.Plan.Spec.TargetNamespace)
+		if pollErr != nil {
+			if apierrors.IsNotFound(pollErr) {
+				allSucceeded = false
+				continue
+			}
+			return PhaseResult{Error: fmt.Errorf(
+				"poll DV %s: %w", dvName, pollErr)}
+		}
+		switch progress.Phase {
+		case cdiv1beta1.Succeeded:
+			continue
+		case cdiv1beta1.Failed:
+			return PhaseResult{Error: fmt.Errorf(
+				"DataVolume %s failed", dvName)}
+		default:
+			allSucceeded = false
+		}
+	}
+	if !allSucceeded {
+		return PhaseResult{Completed: false}
+	}
+	return PhaseResult{Completed: true}
+}
+
+// isCutoverTime checks if the migration's cutover timestamp has passed.
+func isCutoverTime(migration *vmav1alpha1.Migration) bool {
+	if migration.Spec.Cutover == nil ||
+		migration.Spec.Cutover.IsZero() {
+		return false
+	}
+	return time.Now().After(migration.Spec.Cutover.Time)
+}
+
+// getPodPhase returns the phase of a Pod, or PodUnknown if not found.
+func (r *MigrationReconciler) getPodPhase(
+	ctx context.Context, name, namespace string,
+) corev1.PodPhase {
+	pod := &corev1.Pod{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name: name, Namespace: namespace,
+	}, pod); err != nil {
+		return corev1.PodUnknown
+	}
+	return pod.Status.Phase
+}
+
+// deletePod deletes a Pod (best-effort).
+func (r *MigrationReconciler) deletePod(
+	ctx context.Context, name, namespace string,
+) {
+	pod := &corev1.Pod{}
+	pod.Name = name
+	pod.Namespace = namespace
+	_ = r.Delete(ctx, pod)
+}
+
+// deleteConfigMap deletes a ConfigMap (best-effort).
+func (r *MigrationReconciler) deleteConfigMap(
+	ctx context.Context, name, namespace string,
+) {
+	cm := &corev1.ConfigMap{}
+	cm.Name = name
+	cm.Namespace = namespace
+	_ = r.Delete(ctx, cm)
+}
+
+// getDiskUUID extracts the disk UUID from BackingInfo or falls back to ExtID.
+func getDiskUUID(disk nutanix.Disk) string {
+	if disk.BackingInfo != nil && disk.BackingInfo.VMDiskUUID != "" {
+		return disk.BackingInfo.VMDiskUUID
+	}
+	return disk.ExtID
+}
+
+// getDiskSize returns the disk size in bytes.
+func getDiskSize(disk nutanix.Disk) int64 {
+	if disk.DiskSizeBytes > 0 {
+		return disk.DiskSizeBytes
+	}
+	if disk.BackingInfo != nil {
+		return disk.BackingInfo.DiskSizeBytes
+	}
+	return 0
 }
 
 // SetupWithManager sets up the controller with the Manager.

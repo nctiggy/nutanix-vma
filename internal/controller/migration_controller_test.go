@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1155,4 +1156,401 @@ func getMigrationFrom(
 		t.Fatalf("failed to get migration: %v", err)
 	}
 	return m
+}
+
+// --- Warm migration tests ---
+
+func buildWarmMigrationReconciler(
+	fakeNX *fakeNutanixClient,
+	vmIDs []string,
+) *MigrationReconciler {
+	plan, migration, provider, secret, netMap, storMap :=
+		migTestObjects(vmIDs, 1)
+	plan.Spec.Type = vmav1alpha1.MigrationTypeWarm
+	plan.Spec.WarmConfig = &vmav1alpha1.WarmConfig{
+		PrecopyInterval:  "1s",
+		MaxPrecopyRounds: 3,
+	}
+
+	s := newTestScheme()
+	_ = cdiv1beta1.AddToScheme(s)
+	_ = kubevirtv1.AddToScheme(s)
+
+	fc := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(plan, migration, provider, secret,
+			netMap, storMap).
+		WithStatusSubresource(migration,
+			&cdiv1beta1.DataVolume{}).
+		Build()
+
+	return &MigrationReconciler{
+		Client: fc,
+		ClientFactory: func(
+			_ nutanix.ClientConfig,
+		) (nutanix.NutanixClient, error) {
+			return fakeNX, nil
+		},
+	}
+}
+
+func TestWarmMigration_BulkCopyPhase(t *testing.T) {
+	vm := defaultMigrationVM()
+	fakeNX := &fakeNutanixClient{
+		vms:              []nutanix.VM{vm},
+		createImageUUIDs: []string{"img-uuid-001"},
+	}
+
+	r := buildWarmMigrationReconciler(
+		fakeNX, []string{migTestVM1ID})
+
+	// First reconcile: BulkCopy creates snapshot, exports, DVs
+	result, err := r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Error("expected requeue while DVs are pending")
+	}
+
+	m := getMigration(t, r)
+
+	// VM should be in WaitBulkCopy waiting for DataVolume
+	if m.Status.VMs[0].Phase !=
+		vmav1alpha1.VMPhaseWaitBulkCopy {
+		t.Errorf("expected WaitBulkCopy, got %s",
+			m.Status.VMs[0].Phase)
+	}
+
+	// Verify warm status initialized
+	if m.Status.VMs[0].Warm == nil {
+		t.Fatal("expected warm status to be initialized")
+	}
+	if m.Status.VMs[0].Warm.BaseSnapshotUUID == "" {
+		t.Error("expected BaseSnapshotUUID to be set")
+	}
+	if len(m.Status.VMs[0].Warm.BaseImageUUIDs) != 1 {
+		t.Errorf("expected 1 base image UUID, got %d",
+			len(m.Status.VMs[0].Warm.BaseImageUUIDs))
+	}
+
+	// Verify snapshot and images were created
+	if m.Status.VMs[0].SnapshotUUID == "" {
+		t.Error("expected SnapshotUUID to be set")
+	}
+	if len(m.Status.VMs[0].ImageUUIDs) != 1 {
+		t.Errorf("expected 1 image UUID, got %d",
+			len(m.Status.VMs[0].ImageUUIDs))
+	}
+	if len(m.Status.VMs[0].DataVolumeNames) != 1 {
+		t.Errorf("expected 1 DV name, got %d",
+			len(m.Status.VMs[0].DataVolumeNames))
+	}
+}
+
+func TestWarmMigration_PrecopyRound(t *testing.T) {
+	vm := defaultMigrationVM()
+	fakeNX := &fakeNutanixClient{
+		vms: []nutanix.VM{vm},
+		createImageUUIDs: []string{
+			"img-bulk-001", // BulkCopy
+			"img-pc1-001",  // Precopy round 1
+		},
+		createRPUUIDs: []string{
+			"rp-bulk-001", // BulkCopy
+			"rp-pc1-001",  // Precopy round 1
+		},
+	}
+
+	r := buildWarmMigrationReconciler(
+		fakeNX, []string{migTestVM1ID})
+
+	// Reconcile 1: BulkCopy -> WaitBulkCopy (DVs pending)
+	_, err := r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("reconcile 1: %v", err)
+	}
+
+	// Mark DV as Succeeded
+	m := getMigration(t, r)
+	dvName := m.Status.VMs[0].DataVolumeNames[0]
+	dv := &cdiv1beta1.DataVolume{}
+	if err := r.Get(context.Background(), types.NamespacedName{
+		Name: dvName, Namespace: migTestTargetNS,
+	}, dv); err != nil {
+		t.Fatalf("DV not found: %v", err)
+	}
+	dv.Status.Phase = cdiv1beta1.Succeeded
+	if err := r.Status().Update(
+		context.Background(), dv); err != nil {
+		t.Fatalf("failed to update DV status: %v", err)
+	}
+
+	// Reconcile 2: WaitBulkCopy completes -> Precopy starts
+	_, err = r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("reconcile 2: %v", err)
+	}
+
+	m = getMigration(t, r)
+	// Should be in Precopy with a delta pod created
+	if m.Status.VMs[0].Phase !=
+		vmav1alpha1.VMPhasePrecopy {
+		t.Errorf("expected Precopy, got %s",
+			m.Status.VMs[0].Phase)
+	}
+
+	warm := m.Status.VMs[0].Warm
+	if warm.DeltaSnapshotUUID == "" {
+		t.Error("expected DeltaSnapshotUUID to be set")
+	}
+	if len(warm.DeltaImageUUIDs) != 1 {
+		t.Errorf("expected 1 delta image UUID, got %d",
+			len(warm.DeltaImageUUIDs))
+	}
+	if warm.DeltaPodName == "" {
+		t.Error("expected DeltaPodName to be set")
+	}
+}
+
+func TestWarmMigration_CutoverCompletes(t *testing.T) {
+	vm := defaultMigrationVM()
+	fakeNX := &fakeNutanixClient{
+		vms: []nutanix.VM{vm},
+		createImageUUIDs: []string{
+			"img-bulk-001",  // BulkCopy
+			"img-final-001", // FinalSync
+		},
+		createRPUUIDs: []string{
+			"rp-bulk-001",  // BulkCopy
+			"rp-final-001", // FinalSync
+		},
+	}
+
+	plan, migration, provider, secret, netMap, storMap :=
+		migTestObjects([]string{migTestVM1ID}, 1)
+	plan.Spec.Type = vmav1alpha1.MigrationTypeWarm
+	plan.Spec.WarmConfig = &vmav1alpha1.WarmConfig{
+		PrecopyInterval:  "1h", // long interval
+		MaxPrecopyRounds: 10,
+	}
+	// Set cutover in the past to skip precopy
+	cutover := metav1.NewTime(
+		time.Now().Add(-1 * time.Minute))
+	migration.Spec.Cutover = &cutover
+
+	s := newTestScheme()
+	_ = cdiv1beta1.AddToScheme(s)
+	_ = kubevirtv1.AddToScheme(s)
+
+	fc := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(plan, migration, provider, secret,
+			netMap, storMap).
+		WithStatusSubresource(migration,
+			&cdiv1beta1.DataVolume{}).
+		Build()
+
+	r := &MigrationReconciler{
+		Client: fc,
+		ClientFactory: func(
+			_ nutanix.ClientConfig,
+		) (nutanix.NutanixClient, error) {
+			return fakeNX, nil
+		},
+	}
+
+	// Reconcile 1: BulkCopy -> WaitBulkCopy
+	_, err := r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("reconcile 1: %v", err)
+	}
+
+	// Mark DV as Succeeded
+	m := getMigration(t, r)
+	dvName := m.Status.VMs[0].DataVolumeNames[0]
+	dv := &cdiv1beta1.DataVolume{}
+	_ = r.Get(context.Background(), types.NamespacedName{
+		Name: dvName, Namespace: migTestTargetNS,
+	}, dv)
+	dv.Status.Phase = cdiv1beta1.Succeeded
+	_ = r.Status().Update(context.Background(), dv)
+
+	// Reconcile 2: WaitBulkCopy -> Precopy (cutover -> skip)
+	// -> PowerOff -> WaitForPowerOff -> FinalSync
+	_, err = r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("reconcile 2: %v", err)
+	}
+
+	m = getMigration(t, r)
+	// Should be in FinalSync with delta pod created
+	if m.Status.VMs[0].Phase !=
+		vmav1alpha1.VMPhaseFinalSync {
+		t.Errorf("expected FinalSync, got %s",
+			m.Status.VMs[0].Phase)
+	}
+	if m.Status.VMs[0].Warm.DeltaPodName == "" {
+		t.Error("expected FinalSync delta pod to be created")
+	}
+
+	// Mark delta pod as Succeeded
+	pod := &corev1.Pod{}
+	podName := m.Status.VMs[0].Warm.DeltaPodName
+	_ = r.Get(context.Background(), types.NamespacedName{
+		Name: podName, Namespace: migTestTargetNS,
+	}, pod)
+	pod.Status.Phase = corev1.PodSucceeded
+	_ = r.Status().Update(context.Background(), pod)
+
+	// Reconcile 3: FinalSync pod done -> finalize -> CreateVM
+	_, err = r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("reconcile 3: %v", err)
+	}
+
+	// Reconcile 4: Should complete
+	_, err = r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("reconcile 4: %v", err)
+	}
+
+	m = getMigration(t, r)
+	if m.Status.Phase !=
+		vmav1alpha1.MigrationPhaseCompleted {
+		t.Errorf("expected Completed, got %s",
+			m.Status.Phase)
+	}
+
+	// Verify KubeVirt VM was created
+	kvVM := &kubevirtv1.VirtualMachine{}
+	if err := r.Get(context.Background(),
+		types.NamespacedName{
+			Name:      "test-vm",
+			Namespace: migTestTargetNS,
+		}, kvVM); err != nil {
+		t.Fatalf("KubeVirt VM not found: %v", err)
+	}
+}
+
+func TestWarmMigration_MaxPrecopyRounds(t *testing.T) {
+	vm := defaultMigrationVM()
+	fakeNX := &fakeNutanixClient{
+		vms:              []nutanix.VM{vm},
+		createImageUUIDs: []string{"img-001"},
+	}
+
+	plan, migration, provider, secret, netMap, storMap :=
+		migTestObjects([]string{migTestVM1ID}, 1)
+	plan.Spec.Type = vmav1alpha1.MigrationTypeWarm
+	plan.Spec.WarmConfig = &vmav1alpha1.WarmConfig{
+		PrecopyInterval:  "1s",
+		MaxPrecopyRounds: 0, // No rounds allowed
+	}
+
+	s := newTestScheme()
+	_ = cdiv1beta1.AddToScheme(s)
+	_ = kubevirtv1.AddToScheme(s)
+
+	fc := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(plan, migration, provider, secret,
+			netMap, storMap).
+		WithStatusSubresource(migration,
+			&cdiv1beta1.DataVolume{}).
+		Build()
+
+	r := &MigrationReconciler{
+		Client: fc,
+		ClientFactory: func(
+			_ nutanix.ClientConfig,
+		) (nutanix.NutanixClient, error) {
+			return fakeNX, nil
+		},
+	}
+
+	// Reconcile 1: BulkCopy
+	_, _ = r.Reconcile(
+		context.Background(), migrationRequest())
+
+	// Mark DV Succeeded
+	m := getMigration(t, r)
+	dvName := m.Status.VMs[0].DataVolumeNames[0]
+	dv := &cdiv1beta1.DataVolume{}
+	_ = r.Get(context.Background(), types.NamespacedName{
+		Name: dvName, Namespace: migTestTargetNS,
+	}, dv)
+	dv.Status.Phase = cdiv1beta1.Succeeded
+	_ = r.Status().Update(context.Background(), dv)
+
+	// Reconcile 2: WaitBulkCopy -> Precopy
+	// MaxPrecopyRounds=0 so should stay in Precopy waiting
+	_, _ = r.Reconcile(
+		context.Background(), migrationRequest())
+
+	m = getMigration(t, r)
+	if m.Status.VMs[0].Phase !=
+		vmav1alpha1.VMPhasePrecopy {
+		t.Errorf("expected Precopy (waiting for cutover), got %s",
+			m.Status.VMs[0].Phase)
+	}
+	// No delta pod should be created
+	if m.Status.VMs[0].Warm.DeltaPodName != "" {
+		t.Error("no delta pod expected when MaxPrecopyRounds=0")
+	}
+}
+
+func TestNextPhaseInOrder_Warm(t *testing.T) {
+	tests := []struct {
+		current  vmav1alpha1.VMMigrationPhase
+		expected vmav1alpha1.VMMigrationPhase
+	}{
+		{vmav1alpha1.VMPhaseStorePowerState,
+			vmav1alpha1.VMPhaseBulkCopy},
+		{vmav1alpha1.VMPhaseBulkCopy,
+			vmav1alpha1.VMPhaseWaitBulkCopy},
+		{vmav1alpha1.VMPhaseWaitBulkCopy,
+			vmav1alpha1.VMPhasePrecopy},
+		{vmav1alpha1.VMPhasePrecopy,
+			vmav1alpha1.VMPhasePowerOff},
+		{vmav1alpha1.VMPhaseFinalSync,
+			vmav1alpha1.VMPhaseCreateVM},
+	}
+
+	for _, tt := range tests {
+		got := nextPhaseInOrder(tt.current, warmPhaseOrder)
+		if got != tt.expected {
+			t.Errorf("nextPhaseInOrder(%s, warm) = %s, want %s",
+				tt.current, got, tt.expected)
+		}
+	}
+}
+
+func TestIsCutoverTime(t *testing.T) {
+	// No cutover set
+	m := &vmav1alpha1.Migration{}
+	if isCutoverTime(m) {
+		t.Error("no cutover should return false")
+	}
+
+	// Cutover in the past
+	past := metav1.NewTime(time.Now().Add(-1 * time.Hour))
+	m.Spec.Cutover = &past
+	if !isCutoverTime(m) {
+		t.Error("past cutover should return true")
+	}
+
+	// Cutover in the future
+	future := metav1.NewTime(time.Now().Add(1 * time.Hour))
+	m.Spec.Cutover = &future
+	if isCutoverTime(m) {
+		t.Error("future cutover should return false")
+	}
 }

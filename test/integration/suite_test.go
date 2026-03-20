@@ -98,7 +98,10 @@ var _ = BeforeSuite(func() {
 	Expect(k8sClient).NotTo(BeNil())
 
 	By("starting mock Nutanix server")
-	mockServer = mock.NewServer(mock.WithFixtures())
+	mockServer = mock.NewServer(
+		mock.WithFixtures(),
+		mock.WithCBTConfig(mock.DefaultCBTConfig()),
+	)
 	// Clear cluster external addresses so the controller does not attempt
 	// to reach unreachable PE URLs during integration tests.
 	for i := range mockServer.Store.Clusters {

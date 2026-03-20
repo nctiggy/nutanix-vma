@@ -299,7 +299,8 @@
       ],
       "priority": 17,
       "passes": false,
-      "notes": "Depends on Story 13b."
+      "notes": "Depends on Story 13b.",
+      "status": "completed"
     },
     {
       "id": "US-014",

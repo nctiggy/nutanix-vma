@@ -214,6 +214,14 @@ var _ = Describe("Migration Controller", func() {
 				_ = k8sClient.Delete(ctx, &dvList.Items[i])
 			}
 		}
+
+		// Cleanup Pods in target namespace (delta transfer pods)
+		podList := &corev1.PodList{}
+		if err := k8sClient.List(ctx, podList); err == nil {
+			for i := range podList.Items {
+				_ = k8sClient.Delete(ctx, &podList.Items[i])
+			}
+		}
 	})
 
 	Context("cold migration of a Linux VM", func() {
@@ -345,6 +353,153 @@ var _ = Describe("Migration Controller", func() {
 			}
 			Expect(hasReady).To(BeTrue(),
 				"Expected Ready=True condition")
+		})
+	})
+
+	Context("warm migration with cutover", func() {
+		It("should complete through BulkCopy, Precopy, and FinalSync", func() {
+			// Create warm Plan with cutover in the past (skip precopy)
+			plan := &vmav1alpha1.MigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "mig-warm-plan",
+					Namespace: migTestNS,
+				},
+				Spec: vmav1alpha1.MigrationPlanSpec{
+					ProviderRef: corev1.LocalObjectReference{
+						Name: migProviderName,
+					},
+					TargetNamespace: migTargetNS,
+					Type:            vmav1alpha1.MigrationTypeWarm,
+					NetworkMapRef: corev1.LocalObjectReference{
+						Name: migNetMapName,
+					},
+					StorageMapRef: corev1.LocalObjectReference{
+						Name: migStorMapName,
+					},
+					VMs: []vmav1alpha1.PlanVM{
+						{ID: "vm-uuid-001"},
+					},
+					TargetPowerState: vmav1alpha1.TargetPowerStateRunning,
+					WarmConfig: &vmav1alpha1.WarmConfig{
+						PrecopyInterval:  "1h",
+						MaxPrecopyRounds: 10,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, plan)).To(Succeed())
+
+			// Set cutover in the past to trigger immediate cutover
+			cutover := metav1.NewTime(
+				time.Now().Add(-1 * time.Minute))
+			migration := &vmav1alpha1.Migration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "mig-warm-test",
+					Namespace: migTestNS,
+				},
+				Spec: vmav1alpha1.MigrationSpec{
+					PlanRef: corev1.LocalObjectReference{
+						Name: "mig-warm-plan",
+					},
+					Cutover: &cutover,
+				},
+			}
+			Expect(k8sClient.Create(ctx, migration)).To(Succeed())
+
+			// Wait for DataVolumes to be created (BulkCopy)
+			Eventually(func(g Gomega) {
+				m := &vmav1alpha1.Migration{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "mig-warm-test",
+					Namespace: migTestNS,
+				}, m)).To(Succeed())
+				g.Expect(m.Status.VMs).NotTo(BeEmpty())
+				g.Expect(m.Status.VMs[0].DataVolumeNames).
+					NotTo(BeEmpty())
+			}, migTimeout, migInterval).Should(Succeed())
+
+			// Mark DataVolumes as Succeeded
+			m := &vmav1alpha1.Migration{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      "mig-warm-test",
+				Namespace: migTestNS,
+			}, m)).To(Succeed())
+
+			for _, dvName := range m.Status.VMs[0].DataVolumeNames {
+				Eventually(func(g Gomega) {
+					dv := &cdiv1beta1.DataVolume{}
+					g.Expect(k8sClient.Get(ctx,
+						types.NamespacedName{
+							Name:      dvName,
+							Namespace: migTargetNS,
+						}, dv)).To(Succeed())
+					dv.Status.Phase = cdiv1beta1.Succeeded
+					g.Expect(k8sClient.Status().Update(
+						ctx, dv)).To(Succeed())
+				}, migTimeout, migInterval).Should(Succeed())
+			}
+
+			// Wait for FinalSync delta pod to be created
+			Eventually(func(g Gomega) {
+				m := &vmav1alpha1.Migration{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "mig-warm-test",
+					Namespace: migTestNS,
+				}, m)).To(Succeed())
+				g.Expect(m.Status.VMs).NotTo(BeEmpty())
+				g.Expect(m.Status.VMs[0].Warm).NotTo(BeNil())
+				g.Expect(m.Status.VMs[0].Warm.DeltaPodName).
+					NotTo(BeEmpty())
+			}, migTimeout, migInterval).Should(Succeed())
+
+			// Mark delta pod as Succeeded
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      "mig-warm-test",
+				Namespace: migTestNS,
+			}, m)).To(Succeed())
+			podName := m.Status.VMs[0].Warm.DeltaPodName
+
+			Eventually(func(g Gomega) {
+				pod := &corev1.Pod{}
+				g.Expect(k8sClient.Get(ctx,
+					types.NamespacedName{
+						Name:      podName,
+						Namespace: migTargetNS,
+					}, pod)).To(Succeed())
+				pod.Status.Phase = corev1.PodSucceeded
+				g.Expect(k8sClient.Status().Update(
+					ctx, pod)).To(Succeed())
+			}, migTimeout, migInterval).Should(Succeed())
+
+			// Wait for migration to complete
+			Eventually(func(g Gomega) {
+				m := &vmav1alpha1.Migration{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "mig-warm-test",
+					Namespace: migTestNS,
+				}, m)).To(Succeed())
+				g.Expect(m.Status.Phase).To(
+					Equal(vmav1alpha1.MigrationPhaseCompleted))
+			}, migTimeout, migInterval).Should(Succeed())
+
+			// Verify KubeVirt VM exists
+			kvVM := &kubevirtv1.VirtualMachine{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      "test-vm-linux",
+				Namespace: migTargetNS,
+			}, kvVM)).To(Succeed())
+			Expect(kvVM.Labels).To(HaveKeyWithValue(
+				"vma.nutanix.io/source-vm-uuid", "vm-uuid-001"))
+
+			// Verify warm migration status
+			m = &vmav1alpha1.Migration{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      "mig-warm-test",
+				Namespace: migTestNS,
+			}, m)).To(Succeed())
+			Expect(m.Status.VMs).To(HaveLen(1))
+			Expect(m.Status.VMs[0].Phase).To(
+				Equal(vmav1alpha1.VMPhaseCompleted))
+			Expect(m.Status.VMs[0].Warm).NotTo(BeNil())
 		})
 	})
 })
