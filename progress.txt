@@ -1019,3 +1019,28 @@ test/integration/suite_test.go:143:13: SA1019: mgr.GetEventRecorderFor is deprec
 ```
 
 Fix: Replace `mgr.GetEventRecorderFor("migration-controller")` with `mgr.GetEventRecorder()` in both files. The new API is `GetEventRecorder` (no "For" suffix, no name arg).
+
+---
+
+## Integration test flakiness fix (US-016 through US-019 prerequisite)
+
+### Status: Implemented, pending CI verification
+
+### What was done:
+- Fixed integration test flakiness that was blocking CI for US-016 through US-019
+- Root cause 1: Controllers (migration, provider) added finalizer via `r.Update()` then updated status via `r.Status().Update()` in the same reconcile, causing resource version conflicts. The conflict on status update caused re-initialization on next reconcile, leading to race conditions and Failed status.
+- Fix 1: Controllers now `return ctrl.Result{Requeue: true}, nil` immediately after adding a finalizer. Next reconcile handles initialization with fresh resource version.
+- Root cause 2: Each reconcile creates a new `nutanix.NewClient` with its own `http.Transport`, leading to TCP ephemeral port exhaustion during rapid reconciliation in integration tests.
+- Fix 2: Added `DisableKeepAlives` option to `ClientConfig`, passed through to `http.Transport`. Integration test factory uses `DisableKeepAlives: true` to close connections immediately.
+- Updated unit tests to pre-add finalizers on test Migration/Provider objects (standard controller-runtime test pattern)
+
+### Verification:
+- `make build` passes
+- `make test` passes (all 9 integration specs, 2 consecutive runs)
+- `make lint` passes (0 issues)
+
+### Patterns discovered:
+- controller-runtime best practice: never mix metadata update (r.Update for finalizer) with status update (r.Status().Update) in the same reconcile -- return immediately after finalizer addition
+- Pre-add finalizers to test objects to skip the finalizer-only reconcile step in unit tests
+- `DisableKeepAlives: true` on http.Transport prevents TIME_WAIT port accumulation when many short-lived clients connect to the same server
+- Integration test flakiness often manifests as "can't assign requested address" (ephemeral port exhaustion) or "the object has been modified" (resource version conflicts from concurrent reconcilers)
