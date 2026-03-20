@@ -29,6 +29,8 @@ import (
 
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	kubevirtv1 "kubevirt.io/api/core/v1"
+	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -84,6 +86,12 @@ var _ = BeforeSuite(func() {
 	err = vmav1alpha1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
+	By("registering KubeVirt and CDI schemes")
+	err = kubevirtv1.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+	err = cdiv1beta1.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+
 	By("creating K8s client")
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
@@ -120,6 +128,13 @@ var _ = BeforeSuite(func() {
 
 	// Register the Plan controller
 	err = (&controller.PlanReconciler{
+		Client:        mgr.GetClient(),
+		ClientFactory: fastFactory,
+	}).SetupWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+
+	// Register the Migration controller
+	err = (&controller.MigrationReconciler{
 		Client:        mgr.GetClient(),
 		ClientFactory: fastFactory,
 	}).SetupWithManager(mgr)

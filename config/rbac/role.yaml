@@ -44,6 +44,14 @@ rules:
   - get
   - list
 - apiGroups:
+  - kubevirt.io
+  resources:
+  - virtualmachines
+  verbs:
+  - create
+  - get
+  - update
+- apiGroups:
   - storage.k8s.io
   resources:
   - storageclasses

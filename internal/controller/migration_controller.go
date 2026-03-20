@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	kubevirtv1 "kubevirt.io/api/core/v1"
 	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -34,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	vmav1alpha1 "github.com/nctiggy/nutanix-vma/api/v1alpha1"
+	"github.com/nctiggy/nutanix-vma/internal/builder"
 	"github.com/nctiggy/nutanix-vma/internal/nutanix"
 	"github.com/nctiggy/nutanix-vma/internal/transfer"
 )
@@ -107,6 +109,7 @@ func SetupMigrationController(mgr ctrl.Manager) error {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;create;delete
 // +kubebuilder:rbac:groups=cdi.kubevirt.io,resources=datavolumes,verbs=get;list;create;delete
+// +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachines,verbs=get;create;update
 
 // Reconcile handles Migration reconciliation.
 func (r *MigrationReconciler) Reconcile(
@@ -400,6 +403,7 @@ func (r *MigrationReconciler) advanceSingleVM(
 
 		result := r.executePhase(ctx, vmStatus, mctx)
 		if result.Error != nil {
+			r.cleanupFailedVM(ctx, vmStatus, mctx)
 			vmStatus.Phase = vmav1alpha1.VMPhaseFailed
 			vmStatus.Error = result.Error.Error()
 			now := metav1.Now()
@@ -440,8 +444,14 @@ func (r *MigrationReconciler) executePhase(
 		return r.phaseExportDisks(ctx, vmStatus, mctx)
 	case vmav1alpha1.VMPhaseImportDisks:
 		return r.phaseImportDisks(ctx, vmStatus, mctx)
+	case vmav1alpha1.VMPhaseCreateVM:
+		return r.phaseCreateVM(ctx, vmStatus, mctx)
+	case vmav1alpha1.VMPhaseStartVM:
+		return r.phaseStartVM(ctx, vmStatus, mctx)
+	case vmav1alpha1.VMPhaseCleanup:
+		return r.phaseCleanup(ctx, vmStatus, mctx)
 	default:
-		// PreHook, CreateVM, StartVM, PostHook, Cleanup are stubs (US-013c/US-015)
+		// PreHook, PostHook are stubs (US-015)
 		return PhaseResult{Completed: true}
 	}
 }
@@ -714,6 +724,174 @@ func (r *MigrationReconciler) phaseImportDisks(
 	}
 
 	return PhaseResult{Completed: true}
+}
+
+// phaseCreateVM creates the KubeVirt VirtualMachine CR from Nutanix VM metadata.
+// The KubeVirt VM has NO owner reference so it outlives the Migration CR.
+// Idempotent: returns success if the VM already exists.
+func (r *MigrationReconciler) phaseCreateVM(
+	ctx context.Context,
+	vmStatus *vmav1alpha1.VMMigrationStatus,
+	mctx *migrationContext,
+) PhaseResult {
+	vm, err := mctx.NutanixClient.GetVM(ctx, vmStatus.ID)
+	if err != nil {
+		return PhaseResult{Error: fmt.Errorf(
+			"CreateVM: get source VM: %w", err)}
+	}
+
+	// PVC names match DataVolume names (CDI creates PVCs with DV name)
+	kvVM := builder.Build(vm, mctx.NetworkMap, mctx.StorageMap,
+		builder.BuildOptions{
+			Namespace: mctx.Plan.Spec.TargetNamespace,
+			PVCNames:  vmStatus.DataVolumeNames,
+		})
+
+	// NO owner reference -- KubeVirt VM outlives Migration CR
+	if err := r.Create(ctx, kvVM); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			return PhaseResult{Completed: true}
+		}
+		return PhaseResult{Error: fmt.Errorf(
+			"CreateVM: %w", err)}
+	}
+	return PhaseResult{Completed: true}
+}
+
+// phaseStartVM sets the KubeVirt VM's RunStrategy based on the plan's
+// target power state. Defaults to Running if not specified.
+func (r *MigrationReconciler) phaseStartVM(
+	ctx context.Context,
+	vmStatus *vmav1alpha1.VMMigrationStatus,
+	mctx *migrationContext,
+) PhaseResult {
+	if mctx.Plan.Spec.TargetPowerState ==
+		vmav1alpha1.TargetPowerStateStopped {
+		return PhaseResult{Completed: true}
+	}
+
+	// Default or Running: start the VM
+	vm, err := mctx.NutanixClient.GetVM(ctx, vmStatus.ID)
+	if err != nil {
+		return PhaseResult{Error: fmt.Errorf(
+			"StartVM: get source VM: %w", err)}
+	}
+
+	kvVMName := builder.SanitizeName(vm.Name, nil)
+	targetNS := mctx.Plan.Spec.TargetNamespace
+
+	kvVM := &kubevirtv1.VirtualMachine{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name: kvVMName, Namespace: targetNS,
+	}, kvVM); err != nil {
+		return PhaseResult{Error: fmt.Errorf(
+			"StartVM: get KubeVirt VM: %w", err)}
+	}
+
+	runStrategy := kubevirtv1.RunStrategyAlways
+	kvVM.Spec.RunStrategy = &runStrategy
+	if err := r.Update(ctx, kvVM); err != nil {
+		return PhaseResult{Error: fmt.Errorf(
+			"StartVM: update RunStrategy: %w", err)}
+	}
+	return PhaseResult{Completed: true}
+}
+
+// phaseCleanup deletes temporary Nutanix resources created during migration.
+// Errors are logged but do not fail the phase (best-effort cleanup).
+func (r *MigrationReconciler) phaseCleanup(
+	ctx context.Context,
+	vmStatus *vmav1alpha1.VMMigrationStatus,
+	mctx *migrationContext,
+) PhaseResult {
+	logger := log.FromContext(ctx)
+
+	// Delete Nutanix images (temporary exports)
+	for _, imageUUID := range vmStatus.ImageUUIDs {
+		if err := mctx.NutanixClient.DeleteImage(
+			ctx, imageUUID); err != nil {
+			logger.Error(err, "Cleanup: delete image",
+				"uuid", imageUUID)
+		}
+	}
+
+	// Delete Nutanix snapshot (recovery point)
+	if vmStatus.SnapshotUUID != "" {
+		if err := mctx.NutanixClient.DeleteRecoveryPoint(
+			ctx, vmStatus.SnapshotUUID); err != nil {
+			logger.Error(err, "Cleanup: delete snapshot",
+				"uuid", vmStatus.SnapshotUUID)
+		}
+	}
+
+	// Delete credential secret and CA ConfigMap (best-effort)
+	targetNS := mctx.Plan.Spec.TargetNamespace
+	migName := mctx.Migration.Name
+	credName := fmt.Sprintf("vma-%s-creds", shortID(migName))
+	_ = mctx.TransferMgr.DeleteCredentialSecret(
+		ctx, credName, targetNS)
+	caName := fmt.Sprintf("vma-%s-ca", shortID(migName))
+	_ = mctx.TransferMgr.DeleteCAConfigMap(
+		ctx, caName, targetNS)
+
+	return PhaseResult{Completed: true}
+}
+
+// cleanupFailedVM performs best-effort cleanup when a VM migration fails.
+// Deletes DataVolumes, Nutanix images/snapshots, and restores source power state.
+func (r *MigrationReconciler) cleanupFailedVM(
+	ctx context.Context,
+	vmStatus *vmav1alpha1.VMMigrationStatus,
+	mctx *migrationContext,
+) {
+	logger := log.FromContext(ctx)
+
+	targetNS := mctx.Plan.Spec.TargetNamespace
+
+	// Delete DataVolumes (contain partially imported data)
+	for _, dvName := range vmStatus.DataVolumeNames {
+		dv := &cdiv1beta1.DataVolume{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      dvName,
+				Namespace: targetNS,
+			},
+		}
+		if err := r.Delete(ctx, dv); err != nil &&
+			!apierrors.IsNotFound(err) {
+			logger.Error(err, "FailureCleanup: delete DV",
+				"name", dvName)
+		}
+	}
+
+	// Delete Nutanix images
+	for _, imageUUID := range vmStatus.ImageUUIDs {
+		if err := mctx.NutanixClient.DeleteImage(
+			ctx, imageUUID); err != nil {
+			logger.Error(err, "FailureCleanup: delete image",
+				"uuid", imageUUID)
+		}
+	}
+
+	// Delete Nutanix snapshot
+	if vmStatus.SnapshotUUID != "" {
+		if err := mctx.NutanixClient.DeleteRecoveryPoint(
+			ctx, vmStatus.SnapshotUUID); err != nil {
+			logger.Error(err,
+				"FailureCleanup: delete snapshot",
+				"uuid", vmStatus.SnapshotUUID)
+		}
+	}
+
+	// Restore source VM power state
+	if vmStatus.OriginalPowerState ==
+		string(nutanix.PowerStateOn) {
+		if err := mctx.NutanixClient.PowerOnVM(
+			ctx, vmStatus.ID); err != nil {
+			logger.Error(err,
+				"FailureCleanup: restore power",
+				"vm", vmStatus.ID)
+		}
+	}
 }
 
 // updateOverallStatus derives the overall migration phase from per-VM statuses.

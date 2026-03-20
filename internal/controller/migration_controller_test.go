@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	kubevirtv1 "kubevirt.io/api/core/v1"
 	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -180,6 +181,7 @@ func buildFullMigrationReconciler(
 
 	s := newTestScheme()
 	_ = cdiv1beta1.AddToScheme(s)
+	_ = kubevirtv1.AddToScheme(s)
 
 	fc := fake.NewClientBuilder().
 		WithScheme(s).
@@ -288,7 +290,7 @@ func TestMigrationReconcile_FullPipeline(t *testing.T) {
 		t.Fatalf("failed to update DV status: %v", err)
 	}
 
-	// Second reconcile: ImportDisks completes, remaining stubs pass
+	// Second reconcile: ImportDisks completes, CreateVM, StartVM, Cleanup
 	_, err = r.Reconcile(
 		context.Background(), migrationRequest())
 	if err != nil {
@@ -302,6 +304,30 @@ func TestMigrationReconcile_FullPipeline(t *testing.T) {
 	if m.Status.VMs[0].Phase != vmav1alpha1.VMPhaseCompleted {
 		t.Errorf("expected VM Completed, got %s",
 			m.Status.VMs[0].Phase)
+	}
+
+	// Verify KubeVirt VM was created in target namespace
+	kvVM := &kubevirtv1.VirtualMachine{}
+	if err := r.Get(context.Background(), types.NamespacedName{
+		Name:      "test-vm",
+		Namespace: migTestTargetNS,
+	}, kvVM); err != nil {
+		t.Fatalf("KubeVirt VM not found: %v", err)
+	}
+
+	// Verify source labels
+	if kvVM.Labels["vma.nutanix.io/source-vm-uuid"] !=
+		migTestVM1ID {
+		t.Errorf("expected source UUID label %s, got %s",
+			migTestVM1ID,
+			kvVM.Labels["vma.nutanix.io/source-vm-uuid"])
+	}
+
+	// Verify RunStrategy set to Always (default Running)
+	if kvVM.Spec.RunStrategy == nil ||
+		*kvVM.Spec.RunStrategy != kubevirtv1.RunStrategyAlways {
+		t.Error("expected RunStrategy Always for default " +
+			"Running targetPowerState")
 	}
 }
 
@@ -950,6 +976,171 @@ func TestShortID(t *testing.T) {
 		t.Errorf("expected 'abc' unchanged, got %s",
 			shortID("abc"))
 	}
+}
+
+func TestMigrationReconcile_StartVMStopped(t *testing.T) {
+	vm := defaultMigrationVM()
+	fakeNX := &fakeNutanixClient{
+		vms:              []nutanix.VM{vm},
+		createImageUUIDs: []string{"img-uuid-001"},
+	}
+
+	plan, migration, provider, secret, netMap, storMap :=
+		migTestObjects([]string{migTestVM1ID}, 1)
+	plan.Spec.TargetPowerState = vmav1alpha1.TargetPowerStateStopped
+
+	s := newTestScheme()
+	_ = cdiv1beta1.AddToScheme(s)
+	_ = kubevirtv1.AddToScheme(s)
+
+	fc := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(plan, migration, provider, secret,
+			netMap, storMap).
+		WithStatusSubresource(migration,
+			&cdiv1beta1.DataVolume{}).
+		Build()
+
+	r := &MigrationReconciler{
+		Client: fc,
+		ClientFactory: func(
+			_ nutanix.ClientConfig,
+		) (nutanix.NutanixClient, error) {
+			return fakeNX, nil
+		},
+	}
+
+	// First reconcile: advances to ImportDisks
+	_, err := r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("reconcile 1: %v", err)
+	}
+
+	// Mark DV as Succeeded
+	m := getMigration(t, r)
+	dvName := m.Status.VMs[0].DataVolumeNames[0]
+	dv := &cdiv1beta1.DataVolume{}
+	_ = r.Get(context.Background(), types.NamespacedName{
+		Name: dvName, Namespace: migTestTargetNS,
+	}, dv)
+	dv.Status.Phase = cdiv1beta1.Succeeded
+	_ = r.Status().Update(context.Background(), dv)
+
+	// Second reconcile: completes pipeline
+	_, err = r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("reconcile 2: %v", err)
+	}
+
+	m = getMigration(t, r)
+	if m.Status.Phase != vmav1alpha1.MigrationPhaseCompleted {
+		t.Errorf("expected Completed, got %s", m.Status.Phase)
+	}
+
+	// Verify RunStrategy is Halted (Stopped target)
+	kvVM := &kubevirtv1.VirtualMachine{}
+	if err := r.Get(context.Background(), types.NamespacedName{
+		Name:      "test-vm",
+		Namespace: migTestTargetNS,
+	}, kvVM); err != nil {
+		t.Fatalf("KubeVirt VM not found: %v", err)
+	}
+
+	if kvVM.Spec.RunStrategy == nil ||
+		*kvVM.Spec.RunStrategy != kubevirtv1.RunStrategyHalted {
+		t.Error("expected RunStrategy Halted for Stopped " +
+			"targetPowerState")
+	}
+}
+
+func TestMigrationReconcile_FailureCleanupRestoresPower(t *testing.T) {
+	vm := defaultMigrationVM()
+	powerOnCalled := false
+	fakeNX := &fakeNutanixClient{
+		vms:              []nutanix.VM{vm},
+		createImageUUIDs: []string{"img-uuid-001"},
+	}
+
+	r := buildFullMigrationReconciler(
+		fakeNX, []string{migTestVM1ID})
+
+	// First reconcile: reaches ImportDisks
+	_, err := r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("reconcile 1: %v", err)
+	}
+
+	// Mark DV as Failed
+	m := getMigration(t, r)
+	dvName := m.Status.VMs[0].DataVolumeNames[0]
+	dv := &cdiv1beta1.DataVolume{}
+	_ = r.Get(context.Background(), types.NamespacedName{
+		Name: dvName, Namespace: migTestTargetNS,
+	}, dv)
+	dv.Status.Phase = cdiv1beta1.Failed
+	_ = r.Status().Update(context.Background(), dv)
+
+	// Track PowerOnVM call via custom factory
+	fakeNX.powerOnErr = nil
+	origPowerOn := fakeNX.PowerOnVM
+	_ = origPowerOn // suppress unused warning
+	// Replace fakeNX in the reconciler with tracking version
+	r.ClientFactory = func(
+		_ nutanix.ClientConfig,
+	) (nutanix.NutanixClient, error) {
+		tracked := &trackingFakeNX{
+			fakeNutanixClient: fakeNX,
+			onPowerOn:         func() { powerOnCalled = true },
+		}
+		return tracked, nil
+	}
+
+	// Second reconcile: DV failed -> VM fails -> cleanup
+	_, err = r.Reconcile(
+		context.Background(), migrationRequest())
+	if err != nil {
+		t.Fatalf("reconcile 2: %v", err)
+	}
+
+	m = getMigration(t, r)
+	if m.Status.VMs[0].Phase != vmav1alpha1.VMPhaseFailed {
+		t.Errorf("expected Failed, got %s",
+			m.Status.VMs[0].Phase)
+	}
+
+	// Verify power restore was attempted
+	if !powerOnCalled {
+		t.Error("expected PowerOnVM to be called for " +
+			"failure cleanup")
+	}
+
+	// Verify DataVolume was deleted
+	dv = &cdiv1beta1.DataVolume{}
+	err = r.Get(context.Background(), types.NamespacedName{
+		Name: dvName, Namespace: migTestTargetNS,
+	}, dv)
+	if err == nil {
+		t.Error("expected DataVolume to be deleted " +
+			"during failure cleanup")
+	}
+}
+
+// trackingFakeNX wraps fakeNutanixClient to track method calls.
+type trackingFakeNX struct {
+	*fakeNutanixClient
+	onPowerOn func()
+}
+
+func (t *trackingFakeNX) PowerOnVM(
+	ctx context.Context, uuid string,
+) error {
+	if t.onPowerOn != nil {
+		t.onPowerOn()
+	}
+	return t.fakeNutanixClient.PowerOnVM(ctx, uuid)
 }
 
 func getMigrationFrom(

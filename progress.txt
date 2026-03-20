@@ -641,3 +641,48 @@ Iteration 11 [2026-03-20T07:54:00Z]: Plan Controller COMPLETED. CI passed (run 2
 ### Issues: None
 ---
 Iteration 12 [2026-03-20T08:16:08Z]: Migration Controller -- Disk Transfer Phases COMPLETED. CI passed (run 23334512971). Attempt 1.
+
+---
+
+## US-013c: Migration Controller -- VM Creation & Cleanup
+
+### Status: Implemented, pending CI verification
+
+### What was done:
+- Replaced CreateVM stub in migration_controller.go: calls builder.Build() with Nutanix VM, NetworkMap, StorageMap, and BuildOptions (namespace + PVC names from DataVolumeNames). Creates KubeVirt VirtualMachine CR with NO owner reference (outlives Migration CR). Idempotent via AlreadyExists check.
+- Replaced StartVM stub: reads plan's TargetPowerState, if not Stopped (default Running), derives KubeVirt VM name via builder.SanitizeName, gets the VM, updates RunStrategy to Always
+- Replaced Cleanup stub: deletes Nutanix images (vmStatus.ImageUUIDs), deletes Nutanix snapshot (vmStatus.SnapshotUUID), deletes credential secret and CA ConfigMap (best-effort). All errors logged but do not fail the phase.
+- Added cleanupFailedVM: called when any phase fails. Deletes DataVolumes (partially imported data), Nutanix images/snapshots, restores source VM power state (PowerOnVM if original was ON). All best-effort.
+- Added RBAC marker for kubevirt.io/virtualmachines (get, create, update). Regenerated config/rbac/role.yaml.
+- Updated executePhase switch to dispatch CreateVM, StartVM, Cleanup to real handlers (PreHook/PostHook remain stubs for US-015)
+- Updated migration_controller_test.go:
+  - Registered kubevirtv1 scheme in buildFullMigrationReconciler
+  - Updated TestMigrationReconcile_FullPipeline: verifies KubeVirt VM created in target NS with correct labels and RunStrategy=Always
+  - Added TestMigrationReconcile_StartVMStopped: verifies RunStrategy stays Halted when targetPowerState=Stopped
+  - Added TestMigrationReconcile_FailureCleanupRestoresPower: verifies PowerOnVM called, DataVolumes deleted on DV failure
+  - Added trackingFakeNX wrapper for PowerOnVM call tracking
+- Updated test/integration/suite_test.go: registered kubevirtv1 and cdiv1beta1 schemes, registered MigrationReconciler with manager
+- Created test/integration/migration_test.go: full end-to-end cold migration integration test
+  - Creates Provider, Secret, NetworkMap, StorageMap, Plan, Migration
+  - Waits for DataVolumes to be created (VM reaches ImportDisks)
+  - Marks DataVolumes as Succeeded (CDI not running in envtest)
+  - Waits for Migration to reach Completed
+  - Verifies KubeVirt VM exists with correct labels and RunStrategy=Always
+  - Verifies migration status fields (Started, Completed, SnapshotUUID, ImageUUIDs, DataVolumeNames)
+  - Verifies Ready=True condition
+
+### Verification:
+- `make build` passes
+- `make test` passes (84.0% coverage on internal/controller)
+- `make test-integration` passes (7 of 7 specs: 3 provider + 3 plan + 1 migration)
+- `make lint` passes (0 issues)
+
+### Patterns discovered:
+- KubeVirt VM should NOT have owner reference to Migration CR -- outlives the migration lifecycle
+- builder.SanitizeName(vm.Name, nil) is deterministic for deriving KubeVirt VM names without collision handling
+- CDI DataVolumes create PVCs with the same name as the DataVolume -- pass dvNames as pvcNames to builder
+- ginkgolinter enforces Ginkgo-native length assertions: use `Expect(slice).NotTo(BeEmpty())` not `Expect(len(slice)).To(BeNumerically(">", 0))`
+- Integration test for migration requires manual DV status progression since CDI controller isn't running in envtest
+- trackingFakeNX pattern: embed fakeNutanixClient and override specific methods to track calls without reimplementing entire interface
+
+### Issues: None
