@@ -98,12 +98,14 @@ func (r *ProviderReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, nil
 	}
 
-	// Ensure finalizer
+	// Ensure finalizer -- return immediately after adding it to avoid
+	// resource version conflicts between metadata and status updates.
 	if !controllerutil.ContainsFinalizer(provider, providerFinalizer) {
 		controllerutil.AddFinalizer(provider, providerFinalizer)
 		if err := r.Update(ctx, provider); err != nil {
 			return ctrl.Result{}, err
 		}
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	// Set phase to Connecting

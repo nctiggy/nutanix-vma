@@ -108,8 +108,9 @@ func migTestObjects(
 	}
 	migration := &vmav1alpha1.Migration{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      migTestMigrationName,
-			Namespace: migTestNS,
+			Name:       migTestMigrationName,
+			Namespace:  migTestNS,
+			Finalizers: []string{migrationFinalizer},
 		},
 		Spec: vmav1alpha1.MigrationSpec{
 			PlanRef: corev1.LocalObjectReference{
@@ -740,8 +741,9 @@ func TestMigrationReconcile_PlanNotFound(t *testing.T) {
 	_ = cdiv1beta1.AddToScheme(s)
 	migration := &vmav1alpha1.Migration{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      migTestMigrationName,
-			Namespace: migTestNS,
+			Name:       migTestMigrationName,
+			Namespace:  migTestNS,
+			Finalizers: []string{migrationFinalizer},
 		},
 		Spec: vmav1alpha1.MigrationSpec{
 			PlanRef: corev1.LocalObjectReference{

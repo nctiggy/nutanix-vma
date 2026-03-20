@@ -116,9 +116,12 @@ var _ = BeforeSuite(func() {
 
 	// Fast-failing client factory for integration tests: short timeouts
 	// prevent reconciliation from blocking on unreachable PE URLs.
+	// DisableKeepAlives prevents ephemeral port exhaustion from many
+	// short-lived clients during rapid reconciliation.
 	fastFactory := func(config nutanix.ClientConfig) (nutanix.NutanixClient, error) {
 		config.Timeout = 2 * time.Second
 		config.MaxRetries = 0
+		config.DisableKeepAlives = true
 		return nutanix.NewClient(config)
 	}
 

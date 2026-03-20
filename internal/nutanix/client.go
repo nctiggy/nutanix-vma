@@ -85,6 +85,10 @@ type ClientConfig struct {
 
 	// MaxRetries is the maximum number of retries on 429/5xx. Defaults to 3.
 	MaxRetries int
+
+	// DisableKeepAlives closes HTTP connections after each request.
+	// Useful for environments that create many short-lived clients.
+	DisableKeepAlives bool
 }
 
 // httpClient implements NutanixClient using net/http.
@@ -122,7 +126,7 @@ func NewClient(config ClientConfig) (NutanixClient, error) {
 		maxRetries = 3
 	}
 
-	transport, err := buildTransport(config.InsecureSkipVerify, config.CACert)
+	transport, err := buildTransport(config.InsecureSkipVerify, config.CACert, config.DisableKeepAlives)
 	if err != nil {
 		return nil, fmt.Errorf("nutanix client: failed to build transport: %w", err)
 	}

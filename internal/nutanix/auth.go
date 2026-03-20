@@ -29,7 +29,7 @@ func setBasicAuth(req *http.Request, username, password string) {
 }
 
 // buildTransport creates an http.Transport with optional TLS configuration.
-func buildTransport(insecureSkipVerify bool, caCert []byte) (*http.Transport, error) {
+func buildTransport(insecureSkipVerify bool, caCert []byte, disableKeepAlives bool) (*http.Transport, error) {
 	tlsConfig := &tls.Config{
 		MinVersion: tls.VersionTLS12,
 	}
@@ -47,6 +47,7 @@ func buildTransport(insecureSkipVerify bool, caCert []byte) (*http.Transport, er
 	}
 
 	return &http.Transport{
-		TLSClientConfig: tlsConfig,
+		TLSClientConfig:   tlsConfig,
+		DisableKeepAlives: disableKeepAlives,
 	}, nil
 }

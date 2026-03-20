@@ -214,8 +214,9 @@ func newProviderAndSecret() (*vmav1alpha1.NutanixProvider, *corev1.Secret) {
 	ns := migTestNS
 	provider := &vmav1alpha1.NutanixProvider{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-provider",
-			Namespace: ns,
+			Name:       "test-provider",
+			Namespace:  ns,
+			Finalizers: []string{providerFinalizer},
 		},
 		Spec: vmav1alpha1.NutanixProviderSpec{
 			URL:             "https://prism.example.com:9440",

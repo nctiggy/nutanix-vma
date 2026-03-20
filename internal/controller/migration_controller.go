@@ -158,12 +158,14 @@ func (r *MigrationReconciler) Reconcile(
 		return r.handleDeletion(ctx, migration)
 	}
 
-	// Ensure finalizer
+	// Ensure finalizer -- return immediately after adding it to avoid
+	// resource version conflicts between metadata and status updates.
 	if !controllerutil.ContainsFinalizer(migration, migrationFinalizer) {
 		controllerutil.AddFinalizer(migration, migrationFinalizer)
 		if err := r.Update(ctx, migration); err != nil {
 			return ctrl.Result{}, err
 		}
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	// Skip if already in terminal state
