@@ -127,15 +127,15 @@ func SetupMigrationController(mgr ctrl.Manager) error {
 // +kubebuilder:rbac:groups=vma.nutanix.io,resources=migrations/finalizers,verbs=update
 // +kubebuilder:rbac:groups=vma.nutanix.io,resources=migrationplans,verbs=get
 // +kubebuilder:rbac:groups=vma.nutanix.io,resources=nutanixproviders,verbs=get
-// +kubebuilder:rbac:groups=vma.nutanix.io,resources=networkmaps,verbs=get
-// +kubebuilder:rbac:groups=vma.nutanix.io,resources=storagemaps,verbs=get
+// +kubebuilder:rbac:groups=vma.nutanix.io,resources=networkmaps,verbs=get;list;watch
+// +kubebuilder:rbac:groups=vma.nutanix.io,resources=storagemaps,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;create;delete
 // +kubebuilder:rbac:groups=cdi.kubevirt.io,resources=datavolumes,verbs=get;list;create;delete
 // +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachines,verbs=get;create;update
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;create;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;create;delete
-// +kubebuilder:rbac:groups=vma.nutanix.io,resources=hooks,verbs=get
+// +kubebuilder:rbac:groups=vma.nutanix.io,resources=hooks,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile handles Migration reconciliation.
