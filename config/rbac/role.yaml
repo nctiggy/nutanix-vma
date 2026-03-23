@@ -82,6 +82,8 @@ rules:
   - storagemaps
   verbs:
   - get
+  - list
+  - watch
 - apiGroups:
   - vma.nutanix.io
   resources:

@@ -54,8 +54,8 @@ func SetupPlanController(mgr ctrl.Manager) error {
 // +kubebuilder:rbac:groups=vma.nutanix.io,resources=migrationplans,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=vma.nutanix.io,resources=migrationplans/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=vma.nutanix.io,resources=nutanixproviders,verbs=get
-// +kubebuilder:rbac:groups=vma.nutanix.io,resources=networkmaps,verbs=get
-// +kubebuilder:rbac:groups=vma.nutanix.io,resources=storagemaps,verbs=get
+// +kubebuilder:rbac:groups=vma.nutanix.io,resources=networkmaps,verbs=get;list;watch
+// +kubebuilder:rbac:groups=vma.nutanix.io,resources=storagemaps,verbs=get;list;watch
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
