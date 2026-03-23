@@ -1,0 +1,50 @@
+name: Auto-Merge
+
+on:
+  # Run when CI checks complete on PRs
+  check_suite:
+    types: [completed]
+  # Also run when PR status changes
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+  # Run periodically to catch any that slipped through
+  workflow_dispatch:
+
+jobs:
+  auto-merge:
+    name: Auto-merge approved PRs
+    runs-on: ubuntu-latest
+    # Only run if all checks passed
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'check_suite' && github.event.check_suite.conclusion == 'success') ||
+      github.event_name == 'pull_request'
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Auto-merge PRs with passing CI
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Get all open PRs
+          prs=$(gh pr list --json number,mergeable,state,statusCheckRollup --jq '.[] | select(.state == "OPEN")')
+          
+          echo "$prs" | jq -c '.' | while read -r pr; do
+            number=$(echo "$pr" | jq -r '.number')
+            mergeable=$(echo "$pr" | jq -r '.mergeable')
+            
+            # Check if all CI checks passed
+            all_passed=$(echo "$pr" | jq -r '[.statusCheckRollup[]? | select(.status == "COMPLETED") | .conclusion == "SUCCESS"] | all')
+            has_checks=$(echo "$pr" | jq -r '.statusCheckRollup | length > 0')
+            
+            echo "PR #$number: mergeable=$mergeable, all_passed=$all_passed, has_checks=$has_checks"
+            
+            if [ "$mergeable" == "MERGEABLE" ] && [ "$all_passed" == "true" ] && [ "$has_checks" == "true" ]; then
+              echo "Merging PR #$number..."
+              gh pr merge "$number" --squash --auto || echo "Failed to merge PR #$number (may already be merged or have conflicts)"
+            fi
+          done
