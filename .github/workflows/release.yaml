@@ -59,6 +59,25 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+      - name: Extract metadata for Mock Server Docker image
+        id: meta-mock
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-mock
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      - name: Build and push Mock Server Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.mock
+          push: true
+          tags: ${{ steps.meta-mock.outputs.tags }}
+          labels: ${{ steps.meta-mock.outputs.labels }}
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
