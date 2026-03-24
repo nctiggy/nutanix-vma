@@ -17,10 +17,17 @@ limitations under the License.
 package transfer
 
 import (
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
+)
+
+const (
+	// gib is the number of bytes in one gibibyte.
+	gib = 1024 * 1024 * 1024
 )
 
 // DataVolumeOptions configures CDI DataVolume creation.
@@ -56,11 +63,27 @@ type DataVolumeOptions struct {
 	OwnerRef metav1.OwnerReference
 }
 
+// bytesToGiQuantity converts bytes to a Kubernetes resource.Quantity
+// in Gi (gibibytes) format, rounding up to ensure sufficient storage.
+// This ensures PVC storage requests use clean, human-readable values
+// like "40Gi" instead of raw byte counts or millibyte notation.
+func bytesToGiQuantity(bytes int64) resource.Quantity {
+	// Convert bytes to GiB, rounding up to ensure we have enough space
+	gibs := (bytes + gib - 1) / gib
+	if gibs < 1 {
+		gibs = 1 // Minimum 1Gi
+	}
+	return resource.MustParse(fmt.Sprintf("%dGi", gibs))
+}
+
 // BuildDataVolume creates a CDI DataVolume with an HTTP source pointing
 // to a Prism image download endpoint.
 func BuildDataVolume(opts DataVolumeOptions) *cdiv1beta1.DataVolume {
 	storageClassName := opts.StorageClass
 	volumeMode := opts.VolumeMode
+
+	// Convert disk size from bytes to Gi for clean PVC storage requests
+	storageQuantity := bytesToGiQuantity(opts.DiskSizeBytes)
 
 	dv := &cdiv1beta1.DataVolume{
 		ObjectMeta: metav1.ObjectMeta{
@@ -81,9 +104,7 @@ func BuildDataVolume(opts DataVolumeOptions) *cdiv1beta1.DataVolume {
 				VolumeMode:       &volumeMode,
 				Resources: corev1.VolumeResourceRequirements{
 					Requests: corev1.ResourceList{
-						corev1.ResourceStorage: *resource.NewQuantity(
-							opts.DiskSizeBytes, resource.BinarySI,
-						),
+						corev1.ResourceStorage: storageQuantity,
 					},
 				},
 			},
