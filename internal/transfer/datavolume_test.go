@@ -17,12 +17,14 @@ limitations under the License.
 package transfer
 
 import (
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/yaml"
 )
 
 const (
@@ -110,12 +112,19 @@ func TestBuildDataVolume_Basic(t *testing.T) {
 		t.Errorf("expected ReadWriteOnce access mode")
 	}
 
-	expectedSize := resource.NewQuantity(
-		10*1024*1024*1024, resource.BinarySI)
+	// Storage should be in clean Gi format (10Gi for 10 GiB input)
+	expectedSize := resource.MustParse("10Gi")
 	actualSize := dv.Spec.PVC.Resources.Requests[corev1.ResourceStorage]
-	if !actualSize.Equal(*expectedSize) {
+	if !actualSize.Equal(expectedSize) {
 		t.Errorf("expected storage %s, got %s",
 			expectedSize.String(), actualSize.String())
+	}
+
+	// Verify YAML format is "10Gi", not millibytes
+	yamlBytes, _ := yaml.Marshal(dv.Spec.PVC.Resources)
+	yamlStr := string(yamlBytes)
+	if !strings.Contains(yamlStr, "storage: 10Gi") {
+		t.Errorf("expected 'storage: 10Gi' in YAML, got:\n%s", yamlStr)
 	}
 }
 
@@ -165,11 +174,105 @@ func TestBuildDataVolume_SmallDisk(t *testing.T) {
 
 	dv := BuildDataVolume(opts)
 
-	expectedSize := resource.NewQuantity(
-		512*1024*1024, resource.BinarySI)
+	// Small disks should be rounded up to minimum 1Gi
+	expectedSize := resource.MustParse("1Gi")
 	actualSize := dv.Spec.PVC.Resources.Requests[corev1.ResourceStorage]
-	if !actualSize.Equal(*expectedSize) {
+	if !actualSize.Equal(expectedSize) {
 		t.Errorf("expected %s, got %s",
 			expectedSize.String(), actualSize.String())
+	}
+}
+
+func TestBytesToGiQuantity(t *testing.T) {
+	tests := []struct {
+		name     string
+		bytes    int64
+		expected string
+	}{
+		{
+			name:     "exact 10Gi",
+			bytes:    10 * 1024 * 1024 * 1024,
+			expected: "10Gi",
+		},
+		{
+			name:     "40Gi",
+			bytes:    40 * 1024 * 1024 * 1024,
+			expected: "40Gi",
+		},
+		{
+			name:     "rounds up partial Gi",
+			bytes:    10*1024*1024*1024 + 1,
+			expected: "11Gi",
+		},
+		{
+			name:     "small disk rounds to 1Gi",
+			bytes:    512 * 1024 * 1024,
+			expected: "1Gi",
+		},
+		{
+			name:     "zero bytes gets 1Gi minimum",
+			bytes:    0,
+			expected: "1Gi",
+		},
+		{
+			name:     "large disk 100Gi",
+			bytes:    100 * 1024 * 1024 * 1024,
+			expected: "100Gi",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := bytesToGiQuantity(tt.bytes)
+			if q.String() != tt.expected {
+				t.Errorf("bytesToGiQuantity(%d) = %s, want %s",
+					tt.bytes, q.String(), tt.expected)
+			}
+		})
+	}
+}
+
+func TestBuildDataVolume_NoMillibytes(t *testing.T) {
+	// This test ensures we never produce millibyte notation (e.g., "12345m")
+	// which was the root cause of issue #11
+	opts := DataVolumeOptions{
+		Name:          testDVName,
+		Namespace:     testDVNamespace,
+		ImageURL:      testImageURL,
+		DiskSizeBytes: 43980465111040, // ~40Ti worth of bytes (the buggy value from issue #11)
+		StorageClass:  "fast-storage",
+		VolumeMode:    corev1.PersistentVolumeFilesystem,
+		AccessMode:    corev1.ReadWriteOnce,
+		SecretName:    testSecretName,
+		OwnerRef:      testOwnerRef(),
+	}
+
+	dv := BuildDataVolume(opts)
+
+	// Marshal to YAML and verify no millibyte notation
+	yamlBytes, err := yaml.Marshal(dv)
+	if err != nil {
+		t.Fatalf("failed to marshal DataVolume: %v", err)
+	}
+
+	yamlStr := string(yamlBytes)
+
+	// Should NOT contain millibyte notation
+	if strings.Contains(yamlStr, "43980465111040m") {
+		t.Errorf("YAML should not contain millibyte notation, got:\n%s", yamlStr)
+	}
+
+	// Should contain clean binary SI format (Gi or Ti)
+	hasBinarySI := strings.Contains(yamlStr, "Gi") || strings.Contains(yamlStr, "Ti")
+	if !hasBinarySI {
+		t.Errorf("YAML should contain Gi or Ti suffix, got:\n%s", yamlStr)
+	}
+
+	// Verify the actual quantity has binary SI suffix (Gi or Ti)
+	actualSize := dv.Spec.PVC.Resources.Requests[corev1.ResourceStorage]
+	sizeStr := actualSize.String()
+	hasSuffix := strings.HasSuffix(sizeStr, "Gi") || strings.HasSuffix(sizeStr, "Ti")
+	if !hasSuffix {
+		t.Errorf("storage quantity should end with Gi or Ti, got %s", sizeStr)
 	}
 }
