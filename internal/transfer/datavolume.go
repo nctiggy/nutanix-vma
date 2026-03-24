@@ -70,9 +70,7 @@ type DataVolumeOptions struct {
 func bytesToGiQuantity(bytes int64) resource.Quantity {
 	// Convert bytes to GiB, rounding up to ensure we have enough space
 	gibs := (bytes + gib - 1) / gib
-	if gibs < 1 {
-		gibs = 1 // Minimum 1Gi
-	}
+	gibs = max(gibs, 1) // Minimum 1Gi
 	return resource.MustParse(fmt.Sprintf("%dGi", gibs))
 }
 
